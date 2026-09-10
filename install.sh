@@ -63,12 +63,53 @@ disable_extension() {
     gnome-extensions disable "$1" >/dev/null 2>&1 || true
 }
 
+# Fall back to writing the org.gnome.shell settings directly. The running
+# shell only scans the extension directories at startup, so enabling a brand
+# new UUID at runtime fails with "extension does not exist"; this makes sure
+# it is enabled on the next login.
+settings_set_enabled() {
+    local uuid="$1"
+    local enable="$2"
+
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    python3 - "$uuid" "$enable" <<'PY' 2>/dev/null || return 1
+import sys
+
+try:
+    import gi
+    gi.require_version('Gio', '2.0')
+    from gi.repository import Gio
+except Exception:
+    sys.exit(1)
+
+uuid = sys.argv[1]
+enable = sys.argv[2] == 'enable'
+s = Gio.Settings(schema_id='org.gnome.shell')
+enabled = list(s.get_strv('enabled-extensions'))
+disabled = list(s.get_strv('disabled-extensions'))
+
+if enable:
+    if uuid not in enabled:
+        enabled.append(uuid)
+    disabled = [u for u in disabled if u != uuid]
+else:
+    enabled = [u for u in enabled if u != uuid]
+    if uuid not in disabled:
+        disabled.append(uuid)
+
+s.set_strv('enabled-extensions', enabled)
+s.set_strv('disabled-extensions', disabled)
+PY
+}
+
 remove_legacy() {
     if [ ! -e "$LEGACY_DIR" ] && [ ! -L "$LEGACY_DIR" ]; then
         return 0
     fi
 
     disable_extension "$LEGACY_UUID"
+    settings_set_enabled "$LEGACY_UUID" disable || true
 
     if [ "$(readlink -f "$LEGACY_DIR" 2>/dev/null || true)" = "$SCRIPT_DIR" ]; then
         rm -rf "$LEGACY_DIR"
@@ -101,12 +142,13 @@ install_extension() {
         echo "已复制到: $TARGET_DIR"
     fi
 
-    if command -v gnome-extensions >/dev/null 2>&1; then
-        if gnome-extensions enable "$UUID" >/dev/null 2>&1; then
-            echo "已启用: $UUID"
-        else
-            echo "已安装。当前会话未能启用，登录后执行: gnome-extensions enable $UUID"
-        fi
+    if command -v gnome-extensions >/dev/null 2>&1 && \
+        gnome-extensions enable "$UUID" >/dev/null 2>&1; then
+        echo "已启用: $UUID"
+    elif settings_set_enabled "$UUID" enable; then
+        echo "已写入用户设置，登录后自动启用: $UUID"
+    else
+        echo "已安装。登录后执行: gnome-extensions enable $UUID"
     fi
 
     cat <<EOF
