@@ -22,7 +22,7 @@ const SAMPLE_COUNT_KEY = 'sample-count';
 const SAMPLE_OFFSET = 4;                // logical pixels below the panel
 const SAMPLE_MARGIN_RATIO = 0.02;       // keep away from the screen edges
 const SAMPLE_DELAY_WALLPAPER = 1500;    // ms, wait for the wallpaper cross-fade
-const SAMPLE_DELAY_STATE = 500;         // ms, wait for the overview/lock transition
+const SAMPLE_DELAY_STATE = 100;         // ms, the 'shown'/'hidden' signals already fire after the transition
 const LUMINANCE_HYSTERESIS = 0.05;
 
 // The shell already promisifies this, calling it again is a no-op
@@ -46,6 +46,9 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._sampleGeneration = 0;
         this._screenshot = null;
         this._settingsChangedId = null;
+        this._transitioning = false;
+        this._panelTransparent = null;
+        this._windowUpdateId = null;
 
         // BackgroundManager (shell side) -> signal id
         this._bgManagerSignalIds = new Map();
@@ -69,8 +72,14 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._windowSignalIds = new Map();
         this._settingsChangedId = this._settings.connect('changed', (settings, key) => this.transparencyChanged(settings, key));
         this._actorSignalIds.set(Main.overview, [
-            Main.overview.connect('showing', this._updateTransparent.bind(this)),
-            Main.overview.connect('hiding', this._updateTransparent.bind(this)),
+            Main.overview.connect('showing', () => {
+                this._transitioning = true;
+                this._updateTransparent();
+            }),
+            Main.overview.connect('hiding', () => {
+                this._transitioning = true;
+                this._updateTransparent();
+            }),
             Main.overview.connect('shown', this._onBackgroundStateChanged.bind(this)),
             Main.overview.connect('hidden', this._onBackgroundStateChanged.bind(this))
         ]);
@@ -126,31 +135,40 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     transparencyChanged(settings, key) {
 
         if (key === 'transparency') {
-            GLib.source_remove(this.transparencyChangeDebounce);
+            if (this.transparencyChangeDebounce !== null)
+                GLib.source_remove(this.transparencyChangeDebounce);
             this.transparencyChangeDebounce = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
+                this.transparencyChangeDebounce = null;
                 const oldTransparency = this._currentTransparency;
                 this._currentTransparency = this._settings.get_int('transparency');
                 Main.panel.remove_style_class_name('transparent-top-bar-' + oldTransparency);
                 this._updateTransparent();
+                return GLib.SOURCE_REMOVE;
             });
             return;
         }
 
         if (key === 'dark-full-screen') {
             this._darkFullScreen = this._settings.get_boolean('dark-full-screen');
-            GLib.source_remove(this.darkFullScreenChangeDebounce);
+            if (this.darkFullScreenChangeDebounce !== null)
+                GLib.source_remove(this.darkFullScreenChangeDebounce);
             this.darkFullScreenChangeDebounce = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
+                this.darkFullScreenChangeDebounce = null;
                 Main.panel.remove_style_class_name('transparent-top-bar-' + this._currentTransparency);
                 this._updateTransparent();
+                return GLib.SOURCE_REMOVE;
             });
             return;
         }
 
         if (key === 'disable-text-shadow') {
             this._disableTextShadow = this._settings.get_boolean('disable-text-shadow');
-            GLib.source_remove(this.textShadowChangeDebounce);
+            if (this.textShadowChangeDebounce !== null)
+                GLib.source_remove(this.textShadowChangeDebounce);
             this.textShadowChangeDebounce = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
+                this.textShadowChangeDebounce = null;
                 this._updateTextShadow();
+                return GLib.SOURCE_REMOVE;
             });
             return;
         }
@@ -181,9 +199,20 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     disable() {
-        GLib.source_remove(this.transparencyChangeDebounce);
-        GLib.source_remove(this.darkFullScreenChangeDebounce);
-        GLib.source_remove(this.textShadowChangeDebounce);
+        for (const id of [this.transparencyChangeDebounce,
+                          this.darkFullScreenChangeDebounce,
+                          this.textShadowChangeDebounce]) {
+            if (id !== null)
+                GLib.source_remove(id);
+        }
+        this.transparencyChangeDebounce = null;
+        this.darkFullScreenChangeDebounce = null;
+        this.textShadowChangeDebounce = null;
+
+        if (this._windowUpdateId !== null) {
+            GLib.source_remove(this._windowUpdateId);
+            this._windowUpdateId = null;
+        }
 
         for (const actorSignalIds of [this._actorSignalIds, this._windowSignalIds]) {
             for (const [actor, signalIds] of actorSignalIds) {
@@ -237,6 +266,10 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._luminance.clear();
         this._darkText.clear();
 
+        // Pretend the panel is already opaque so _setTransparent() does not
+        // schedule a sample that would run after the extension is gone
+        this._panelTransparent = false;
+        this._transitioning = false;
         this._setTransparent(false);
         Main.panel.remove_style_class_name('no-text-shadow');
         this._settings = null;
@@ -244,23 +277,42 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
     _onWindowActorAdded(container, metaWindowActor) {
         this._windowSignalIds.set(metaWindowActor, [
-            metaWindowActor.connect('notify::allocation', this._updateTransparent.bind(this)),
-            metaWindowActor.connect('notify::visible', this._updateTransparent.bind(this))
+            metaWindowActor.connect('notify::allocation', this._queueWindowUpdate.bind(this)),
+            metaWindowActor.connect('notify::visible', this._queueWindowUpdate.bind(this))
         ]);
     }
 
     _onWindowActorRemoved(container, metaWindowActor) {
-        for (const signalId of this._windowSignalIds.get(metaWindowActor)) {
-            metaWindowActor.disconnect(signalId);
+        const signalIds = this._windowSignalIds.get(metaWindowActor);
+        if (signalIds) {
+            for (const signalId of signalIds)
+                metaWindowActor.disconnect(signalId);
+            this._windowSignalIds.delete(metaWindowActor);
         }
-        this._windowSignalIds.delete(metaWindowActor);
         this._updateTransparent();
     }
 
-    _updateTransparentDelayed() {
-        this._delayedTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+    // Window actors emit allocation and visibility changes every frame while
+    // they are moved or resized; coalesce them instead of re-evaluating the
+    // panel once per signal
+    _queueWindowUpdate() {
+        if (this._windowUpdateId !== null)
+            return;
+
+        this._windowUpdateId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+            this._windowUpdateId = null;
             this._updateTransparent();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _updateTransparentDelayed() {
+        if (this._delayedTimeoutId !== null)
+            GLib.source_remove(this._delayedTimeoutId);
+
+        this._delayedTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
             this._delayedTimeoutId = null;
+            this._updateTransparent();
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -321,6 +373,15 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             Main.panel.remove_style_class_name('transparent-top-bar-' + transparency);
         }
 
+        // The sample area may just have been uncovered by a window, so the
+        // cached luminance can be that of the window content; re-sample when
+        // the panel becomes transparent again
+        if (this._panelTransparent !== transparent) {
+            this._panelTransparent = transparent;
+            if (transparent)
+                this._scheduleSampling(SAMPLE_DELAY_STATE);
+        }
+
         this._applyAutoColorClass();
         this._updateTextShadow();
     }
@@ -347,6 +408,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
      * (overview shown/hidden, session locked/unlocked).
      */
     _onBackgroundStateChanged() {
+        this._transitioning = false;
         this._applyAutoColorClass();
 
         // Always re-sample: the state background (overview blur, lock screen)
@@ -355,6 +417,18 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     _invalidateLuminance() {
+        // The wallpaper changed as a whole; cached values for the states we
+        // cannot sample right now (overview blur, lock screen) are stale
+        const current = this._currentBackgroundState;
+        for (const state of this._luminance.keys()) {
+            if (state !== current)
+                this._luminance.delete(state);
+        }
+        for (const state of this._darkText.keys()) {
+            if (state !== current)
+                this._darkText.delete(state);
+        }
+
         this._scheduleSampling();
     }
 
@@ -386,7 +460,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             this._sampleTimeoutId = null;
         }
 
-        if (!this._autoForegroundColor) {
+        if (!this._autoForegroundColor || this._settings === null) {
             return;
         }
 
@@ -398,11 +472,18 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     async _refreshBackgroundLuminance() {
+        if (this._transitioning)
+            return;
+
         const state = this._currentBackgroundState;
         const generation = ++this._sampleGeneration;
         const luminance = await this._sampleBackgroundLuminance(state);
 
-        if (generation !== this._sampleGeneration || state !== this._currentBackgroundState) {
+        // The overview/lock transition changes the background over its whole
+        // duration; a sample taken in the middle is a mix of both states
+        if (generation !== this._sampleGeneration ||
+            this._transitioning ||
+            state !== this._currentBackgroundState) {
             return;
         }
 
@@ -469,42 +550,52 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     _applyAutoColorClass() {
-        Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
-        Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
+        let darkText = null;
 
-        if (!this._autoForegroundColor) {
-            return;
+        if (this._autoForegroundColor &&
+            Main.panel.has_style_class_name('transparent-top-bar')) {
+            const transparency = this._settings.get_int('transparency');
+            const state = this._currentBackgroundState;
+            let luminance = this._luminance.get(state);
+
+            // The first visit of a state has no value yet; the desktop
+            // wallpaper is a much better guess than the theme default
+            if (luminance === undefined && state !== PanelBackgroundState.DESKTOP)
+                luminance = this._luminance.get(PanelBackgroundState.DESKTOP);
+
+            if (transparency < 100 && luminance !== undefined) {
+                // the bar itself is rgba(0, 0, 0, transparency%), so it darkens its background
+                const effective = luminance * (1 - transparency / 100);
+                const threshold = this._settings.get_double(FOREGROUND_LUMINANCE_THRESHOLD_KEY);
+
+                const previous = this._darkText.get(state);
+                if (previous !== undefined && Math.abs(effective - threshold) < LUMINANCE_HYSTERESIS) {
+                    darkText = previous;
+                } else {
+                    darkText = effective > threshold;
+                }
+
+                this._darkText.set(state, darkText);
+            }
         }
 
-        if (!Main.panel.has_style_class_name('transparent-top-bar')) {
-            return;
-        }
-
-        const transparency = this._settings.get_int('transparency');
-        if (transparency >= 100) {
-            return;
-        }
-
-        const state = this._currentBackgroundState;
-        const luminance = this._luminance.get(state);
-        if (luminance === undefined) {
-            return;
-        }
-
-        // the bar itself is rgba(0, 0, 0, transparency%), so it darkens its background
-        const effective = luminance * (1 - transparency / 100);
-        const threshold = this._settings.get_double(FOREGROUND_LUMINANCE_THRESHOLD_KEY);
-
-        let darkText;
-        const previous = this._darkText.get(state);
-        if (previous !== undefined && Math.abs(effective - threshold) < LUMINANCE_HYSTERESIS) {
-            darkText = previous;
+        // Only touch the style classes when the result actually changes:
+        // even a no-op remove/add pair counts as a style change, and a style
+        // change cancels the panel background transition St is animating
+        if (darkText === true) {
+            if (!Main.panel.has_style_class_name(DARK_TEXT_CLASS)) {
+                Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
+                Main.panel.add_style_class_name(DARK_TEXT_CLASS);
+            }
+        } else if (darkText === false) {
+            if (!Main.panel.has_style_class_name(LIGHT_TEXT_CLASS)) {
+                Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
+                Main.panel.add_style_class_name(LIGHT_TEXT_CLASS);
+            }
         } else {
-            darkText = effective > threshold;
+            Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
+            Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
         }
-
-        this._darkText.set(state, darkText);
-        Main.panel.add_style_class_name(darkText ? DARK_TEXT_CLASS : LIGHT_TEXT_CLASS);
     }
 
 };
