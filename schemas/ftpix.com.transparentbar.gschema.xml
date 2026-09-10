@@ -20,6 +20,18 @@
                 dark wallpapers.
             </description>
         </key>
+        <key type="d" name="foreground-luminance-threshold">
+            <default>0.5</default>
+            <range min="0.1" max="0.9"/>
+            <summary>Dark text threshold</summary>
+            <description>Use dark text when the sampled background luminance is higher than this value.</description>
+        </key>
+        <key type="i" name="sample-count">
+            <default>12</default>
+            <range min="3" max="32"/>
+            <summary>Background sample points</summary>
+            <description>Number of points sampled from the background behind the top bar.</description>
+        </key>
         <key type="b" name="disable-text-shadow">
             <default>false</default>
             <summary>Disable text shadow</summary>

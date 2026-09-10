@@ -17,12 +17,12 @@ const PanelBackgroundState = {
     OVERVIEW: 'overview',
     LOCK: 'lock',
 };
-const SAMPLE_COUNT = 12;
+const FOREGROUND_LUMINANCE_THRESHOLD_KEY = 'foreground-luminance-threshold';
+const SAMPLE_COUNT_KEY = 'sample-count';
 const SAMPLE_OFFSET = 4;                // logical pixels below the panel
 const SAMPLE_MARGIN_RATIO = 0.02;       // keep away from the screen edges
 const SAMPLE_DELAY_WALLPAPER = 1500;    // ms, wait for the wallpaper cross-fade
 const SAMPLE_DELAY_STATE = 500;         // ms, wait for the overview/lock transition
-const DARK_TEXT_LUMINANCE_THRESHOLD = 0.5;
 const LUMINANCE_HYSTERESIS = 0.05;
 
 // The shell already promisifies this, calling it again is a no-op
@@ -149,6 +149,16 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
                 this._darkText.clear();
                 this._applyAutoColorClass();
             }
+            return;
+        }
+
+        if (key === FOREGROUND_LUMINANCE_THRESHOLD_KEY) {
+            this._applyAutoColorClass();
+            return;
+        }
+
+        if (key === SAMPLE_COUNT_KEY) {
+            this._scheduleSampling(250);
             return;
         }
     }
@@ -378,11 +388,12 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         const margin = Math.max(8, Math.round(monitor.width * SAMPLE_MARGIN_RATIO));
         const usableWidth = Math.max(1, monitor.width - 2 * margin);
+        const sampleCount = this._settings.get_int(SAMPLE_COUNT_KEY);
         const luminances = [];
         const startUs = GLib.get_monotonic_time();
 
-        for (let i = 0; i < SAMPLE_COUNT; i++) {
-            const x = Math.round(monitor.x + margin + (i + 0.5) * usableWidth / SAMPLE_COUNT);
+        for (let i = 0; i < sampleCount; i++) {
+            const x = Math.round(monitor.x + margin + (i + 0.5) * usableWidth / sampleCount);
 
             try {
                 const [color] = await this._screenshot.pick_color(x, y);
@@ -408,7 +419,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         log('Transparent Top Bar: panel background luminance ' +
             `[${state}] median=${median.toFixed(3)} mean=${mean.toFixed(3)} ` +
-            `(${luminances.length}/${SAMPLE_COUNT} samples in ${elapsedMs.toFixed(1)} ms)`);
+            `(${luminances.length}/${sampleCount} samples in ${elapsedMs.toFixed(1)} ms)`);
 
         return median;
     }
@@ -438,7 +449,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         // the bar itself is rgba(0, 0, 0, transparency%), so it darkens its background
         const effective = luminance * (1 - transparency / 100);
-        const threshold = DARK_TEXT_LUMINANCE_THRESHOLD;
+        const threshold = this._settings.get_double(FOREGROUND_LUMINANCE_THRESHOLD_KEY);
 
         let darkText;
         const previous = this._darkText.get(state);
