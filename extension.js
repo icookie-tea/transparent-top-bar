@@ -56,7 +56,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
     enable() {
 
-        this._settings = this.getSettings('com.ftpix.transparentbar');
+        this._settings = this.getSettings();
         this._currentTransparency = this._settings.get_int('transparency');
         this._darkFullScreen = this._settings.get_boolean('dark-full-screen');
         this._disableTextShadow = this._settings.get_boolean('disable-text-shadow');

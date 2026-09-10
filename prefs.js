@@ -13,7 +13,7 @@ const SAMPLE_COUNT = 'sample-count';
 export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
 
     fillPreferencesWindow(window) {
-        const settings = this.getSettings('com.ftpix.transparentbar');
+        const settings = this.getSettings();
 
         window.search_enabled = true;
         window.default_width = 500;
