@@ -37,6 +37,8 @@ const sleep = ms => new Promise(resolve => {
     });
 });
 
+const nowMs = () => GLib.get_monotonic_time() / 1000;
+
 async function waitFor(fn, timeoutMs = 15000, stepMs = 100) {
     const deadline = GLib.get_monotonic_time() + timeoutMs * 1000;
     for (;;) {
@@ -109,37 +111,46 @@ export async function run() {
         check('initial desktop sample exists', desktopLum !== undefined, `desktop=${desktopLum}`);
 
         // --- A: overview transition guard --------------------------------
-        if (ext._transitioning === undefined) {
-            info('pre-fix code: no transition flag, skipping test A');
+        const extHasDeadline = typeof ext._unstableUntilMs === 'number';
+        const waitStable = async () => {
+            if (extHasDeadline)
+                await waitFor(() => ext._unstableUntilMs <= nowMs(), 3000, 50);
+            else
+                await sleep(600); // overview transition is 250ms
+        };
+
+        const originalSample = ext._sampleBackgroundLuminance;
+        const SENTINEL = 0.42;
+        ext._sampleBackgroundLuminance = async () => SENTINEL;
+        ext._luminance.delete('overview');
+
+        Main.overview.show();
+        await sleep(80);
+        if (extHasDeadline) {
+            check('background is marked unstable during the overview transition',
+                ext._unstableUntilMs > nowMs(),
+                `unstableUntil-now=${(ext._unstableUntilMs - nowMs()).toFixed(0)}ms`);
         } else {
-            const originalSample = ext._sampleBackgroundLuminance;
-            const SENTINEL = 0.42;
-            ext._sampleBackgroundLuminance = async () => SENTINEL;
-            ext._luminance.delete('overview');
-
-            Main.overview.show();
-            await sleep(80);
-            check('overview transition flag is set', ext._transitioning === true,
-                `visible=${Main.overview.visible}`);
-            await ext._refreshBackgroundLuminance();
-            check('sample during transition is discarded',
-                ext._luminance.get('overview') === undefined,
-                `overview=${ext._luminance.get('overview')}`);
-
-            await waitFor(() => ext._transitioning === false, 3000, 50);
-            await ext._refreshBackgroundLuminance();
-            check('sample after transition is accepted',
-                ext._luminance.get('overview') === SENTINEL,
-                `overview=${ext._luminance.get('overview')}`);
-
-            ext._sampleBackgroundLuminance = originalSample;
-            ext._luminance.delete('overview');
-            ext._darkText.delete('overview');
-
-            Main.overview.hide();
-            await waitFor(() => !Main.overview.visible, 5000, 50);
-            await sleep(500);
+            info('pre-fix code: no instability deadline');
         }
+        await ext._refreshBackgroundLuminance();
+        check('sample during transition is discarded',
+            ext._luminance.get('overview') === undefined,
+            `overview=${ext._luminance.get('overview')}`);
+
+        await waitStable();
+        await ext._refreshBackgroundLuminance();
+        check('sample after transition is accepted',
+            ext._luminance.get('overview') === SENTINEL,
+            `overview=${ext._luminance.get('overview')}`);
+
+        ext._sampleBackgroundLuminance = originalSample;
+        ext._luminance.delete('overview');
+        ext._darkText.delete('overview');
+
+        Main.overview.hide();
+        await waitFor(() => !Main.overview.visible, 5000, 50);
+        await sleep(500);
 
         // --- B: panel background transition on window leave --------------
         const win = await waitFor(findTestWindow, 25000, 250);
@@ -188,7 +199,7 @@ export async function run() {
         // --- C: real overview sampling -----------------------------------
         const beforeOverview = ext._luminance.get('desktop');
         Main.overview.show();
-        await waitFor(() => ext._transitioning === false, 3000, 50);
+        await waitStable();
         await sleep(500);
         const overviewLum = ext._luminance.get('overview');
         check('overview sample recorded while stable', overviewLum !== undefined,

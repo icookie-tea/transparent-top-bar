@@ -8,8 +8,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
+const DEBUG_LOGGING = 'debug-logging';
 const DARK_TEXT_CLASS = 'transparent-top-bar-dark-text';
-const LIGHT_TEXT_CLASS = 'transparent-top-bar-light-text';
 
 // Background sampling for the auto foreground color
 const PanelBackgroundState = {
@@ -23,6 +23,8 @@ const SAMPLE_OFFSET = 4;                // logical pixels below the panel
 const SAMPLE_MARGIN_RATIO = 0.02;       // keep away from the screen edges
 const SAMPLE_DELAY_WALLPAPER = 1500;    // ms, wait for the wallpaper cross-fade
 const SAMPLE_DELAY_STATE = 100;         // ms, the 'shown'/'hidden' signals already fire after the transition
+const OVERVIEW_UNSTABLE_TIME = 300;     // ms, overview transition (250ms) plus margin
+const SESSION_UNSTABLE_TIME = 500;      // ms, lock/unlock curtain (300ms) plus margin
 const LUMINANCE_HYSTERESIS = 0.05;
 
 // The shell already promisifies this, calling it again is a no-op
@@ -46,9 +48,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._sampleGeneration = 0;
         this._screenshot = null;
         this._settingsChangedId = null;
-        this._transitioning = false;
+        this._unstableUntilMs = 0;
         this._panelTransparent = null;
         this._windowUpdateId = null;
+        this._wallpaperSettleTimeoutId = null;
+        this._debugLogging = false;
 
         // BackgroundManager (shell side) -> signal id
         this._bgManagerSignalIds = new Map();
@@ -67,17 +71,18 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._darkFullScreen = this._settings.get_boolean('dark-full-screen');
         this._disableTextShadow = this._settings.get_boolean('disable-text-shadow');
         this._autoForegroundColor = this._settings.get_boolean(AUTO_FOREGROUND_COLOR);
+        this._debugLogging = this._settings.get_boolean(DEBUG_LOGGING);
 
         this._actorSignalIds = new Map();
         this._windowSignalIds = new Map();
         this._settingsChangedId = this._settings.connect('changed', (settings, key) => this.transparencyChanged(settings, key));
         this._actorSignalIds.set(Main.overview, [
             Main.overview.connect('showing', () => {
-                this._transitioning = true;
+                this._markUnstable(OVERVIEW_UNSTABLE_TIME);
                 this._updateTransparent();
             }),
             Main.overview.connect('hiding', () => {
-                this._transitioning = true;
+                this._markUnstable(OVERVIEW_UNSTABLE_TIME);
                 this._updateTransparent();
             }),
             Main.overview.connect('shown', this._onBackgroundStateChanged.bind(this)),
@@ -129,7 +134,10 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._hookBackgroundManagers();
 
         this._updateTransparent();
-        this._invalidateLuminance();
+
+        // _updateTransparent() samples quickly when the panel turns
+        // transparent; confirm the result once the startup wallpaper settled
+        this._scheduleWallpaperSettleSample();
     }
 
     transparencyChanged(settings, key) {
@@ -173,6 +181,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             return;
         }
 
+        if (key === DEBUG_LOGGING) {
+            this._debugLogging = this._settings.get_boolean(DEBUG_LOGGING);
+            return;
+        }
+
         if (key === AUTO_FOREGROUND_COLOR) {
             this._autoForegroundColor = this._settings.get_boolean(AUTO_FOREGROUND_COLOR);
             this._sampleGeneration++;
@@ -212,6 +225,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         if (this._windowUpdateId !== null) {
             GLib.source_remove(this._windowUpdateId);
             this._windowUpdateId = null;
+        }
+
+        if (this._wallpaperSettleTimeoutId !== null) {
+            GLib.source_remove(this._wallpaperSettleTimeoutId);
+            this._wallpaperSettleTimeoutId = null;
         }
 
         for (const actorSignalIds of [this._actorSignalIds, this._windowSignalIds]) {
@@ -269,7 +287,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         // Pretend the panel is already opaque so _setTransparent() does not
         // schedule a sample that would run after the extension is gone
         this._panelTransparent = false;
-        this._transitioning = false;
+        this._unstableUntilMs = 0;
         this._setTransparent(false);
         Main.panel.remove_style_class_name('no-text-shadow');
         this._settings = null;
@@ -399,6 +417,8 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     _onSessionModeUpdated() {
+        // The lock screen slides in/out over ~300ms
+        this._markUnstable(SESSION_UNSTABLE_TIME);
         this._updateTransparent();
         this._onBackgroundStateChanged();
     }
@@ -408,7 +428,6 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
      * (overview shown/hidden, session locked/unlocked).
      */
     _onBackgroundStateChanged() {
-        this._transitioning = false;
         this._applyAutoColorClass();
 
         // Always re-sample: the state background (overview blur, lock screen)
@@ -416,7 +435,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._scheduleSampling(SAMPLE_DELAY_STATE);
     }
 
-    _invalidateLuminance() {
+    _invalidateLuminance(delay = SAMPLE_DELAY_WALLPAPER) {
         // The wallpaper changed as a whole; cached values for the states we
         // cannot sample right now (overview blur, lock screen) are stale
         const current = this._currentBackgroundState;
@@ -429,7 +448,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
                 this._darkText.delete(state);
         }
 
-        this._scheduleSampling();
+        this._scheduleSampling(delay);
     }
 
     _hookBackgroundManagers() {
@@ -454,6 +473,24 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
     }
 
+    // The background is animated while the overview or the lock screen is
+    // shown/hidden; sampling before this deadline yields a mix of both states
+    _markUnstable(durationMs) {
+        const nowMs = GLib.get_monotonic_time() / 1000;
+        this._unstableUntilMs = Math.max(this._unstableUntilMs, nowMs + durationMs);
+    }
+
+    _scheduleWallpaperSettleSample() {
+        if (this._wallpaperSettleTimeoutId !== null)
+            GLib.source_remove(this._wallpaperSettleTimeoutId);
+
+        this._wallpaperSettleTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SAMPLE_DELAY_WALLPAPER, () => {
+            this._wallpaperSettleTimeoutId = null;
+            this._invalidateLuminance(0);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     _scheduleSampling(delay = SAMPLE_DELAY_WALLPAPER) {
         if (this._sampleTimeoutId !== null) {
             GLib.source_remove(this._sampleTimeoutId);
@@ -464,6 +501,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             return;
         }
 
+        // Do not sample while the overview or the lock screen is animating
+        const remaining = this._unstableUntilMs - GLib.get_monotonic_time() / 1000;
+        if (remaining > 0)
+            delay = Math.max(delay, Math.ceil(remaining));
+
         this._sampleTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
             this._sampleTimeoutId = null;
             this._refreshBackgroundLuminance();
@@ -472,8 +514,12 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     async _refreshBackgroundLuminance() {
-        if (this._transitioning)
+        const nowMs = GLib.get_monotonic_time() / 1000;
+        if (nowMs < this._unstableUntilMs) {
+            // The background is still animating; retry once it has settled
+            this._scheduleSampling(Math.ceil(this._unstableUntilMs - nowMs));
             return;
+        }
 
         const state = this._currentBackgroundState;
         const generation = ++this._sampleGeneration;
@@ -482,7 +528,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         // The overview/lock transition changes the background over its whole
         // duration; a sample taken in the middle is a mix of both states
         if (generation !== this._sampleGeneration ||
-            this._transitioning ||
+            GLib.get_monotonic_time() / 1000 < this._unstableUntilMs ||
             state !== this._currentBackgroundState) {
             return;
         }
@@ -542,9 +588,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         const median = sorted[Math.floor(sorted.length / 2)];
         const mean = luminances.reduce((sum, value) => sum + value, 0) / luminances.length;
 
-        log('Transparent Top Bar: panel background luminance ' +
-            `[${state}] median=${median.toFixed(3)} mean=${mean.toFixed(3)} ` +
-            `(${luminances.length}/${sampleCount} samples in ${elapsedMs.toFixed(1)} ms)`);
+        if (this._debugLogging) {
+            log('Transparent Top Bar: panel background luminance ' +
+                `[${state}] median=${median.toFixed(3)} mean=${mean.toFixed(3)} ` +
+                `(${luminances.length}/${sampleCount} samples in ${elapsedMs.toFixed(1)} ms)`);
+        }
 
         return median;
     }
@@ -581,20 +629,14 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         // Only touch the style classes when the result actually changes:
         // even a no-op remove/add pair counts as a style change, and a style
-        // change cancels the panel background transition St is animating
+        // change cancels the panel background transition St is animating.
+        // The light style is the default of #panel.transparent-top-bar, so
+        // the dark class alone controls the foreground color
         if (darkText === true) {
-            if (!Main.panel.has_style_class_name(DARK_TEXT_CLASS)) {
-                Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
+            if (!Main.panel.has_style_class_name(DARK_TEXT_CLASS))
                 Main.panel.add_style_class_name(DARK_TEXT_CLASS);
-            }
-        } else if (darkText === false) {
-            if (!Main.panel.has_style_class_name(LIGHT_TEXT_CLASS)) {
-                Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
-                Main.panel.add_style_class_name(LIGHT_TEXT_CLASS);
-            }
         } else {
             Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
-            Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
         }
     }
 

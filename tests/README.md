@@ -10,8 +10,8 @@
 
 | 测试 | 断言 |
 |---|---|
-| A | `showing` 后 80ms 手动触发采样：`_transitioning` 为 true，且结果**不写入** overview 缓存 |
-| A | `shown` 之后采样：结果**写入**缓存 |
+| A | `showing` 后 80ms 手动触发采样：`_unstableUntilMs` 未到期（旧代码无此标记），且结果**不写入** overview 缓存 |
+| A | 截止时间过后采样：结果**写入**缓存 |
 | B | 窗口贴近面板时，面板变为不透明（黑色，`transparent-top-bar` 类被移除） |
 | B | 窗口离开 300ms 后再触发一次 `_updateTransparent()`：面板背景仍在淡出中途（既不是全黑也不是全透明） |
 | B | 过渡结束后面板完全透明 |

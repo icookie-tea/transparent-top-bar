@@ -9,6 +9,7 @@ const DISABLE_TEXT_SHADOW = 'disable-text-shadow';
 const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 const FOREGROUND_LUMINANCE_THRESHOLD = 'foreground-luminance-threshold';
 const SAMPLE_COUNT = 'sample-count';
+const DEBUG_LOGGING = 'debug-logging';
 
 export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
 
@@ -108,6 +109,19 @@ export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
 
         page.add(barGroup);
         page.add(colorGroup);
+
+        const debugGroup = new Adw.PreferencesGroup({
+            title: _('Debug'),
+        });
+
+        const debugRow = new Adw.SwitchRow({
+            title: _('Log background samples'),
+            subtitle: _('Write the sampled luminance to the system log'),
+        });
+        settings.bind(DEBUG_LOGGING, debugRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        debugGroup.add(debugRow);
+
+        page.add(debugGroup);
         window.add(page);
     }
 }

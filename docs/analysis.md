@@ -9,7 +9,7 @@
 
 | 现象 | 根因 | 修复 |
 |---|---|---|
-| 进入 overview 偶发用错前景色，约 0.5–1s 后自愈 | 采样定时器可能落在 overview 的 250ms 过渡窗口内，采到尚未变暗/模糊的背景，并被当成稳态值写进 `overview` 缓存；下次进入会先套用这个脏缓存 | 用 `_transitioning` 标记过渡，采样前后都校验；`shown`/`hidden` 后的采样延迟 500→100ms；失效时清掉其它状态的缓存；无缓存时用桌面亮度兜底 |
+| 进入 overview 偶发用错前景色，约 0.5–1s 后自愈 | 采样定时器可能落在 overview 的 250ms 过渡窗口内，采到尚未变暗/模糊的背景，并被当成稳态值写进 `overview` 缓存；下次进入会先套用这个脏缓存 | 用 `_unstableUntilMs` 截止时间标记过渡，`_scheduleSampling()` 自动把采样推迟到过渡结束；`shown`/`hidden` 后的采样延迟 500→100ms；启用时先快速采样再延迟确认；失效时清掉其它状态的缓存；无缓存时用桌面亮度兜底 |
 | 窗口靠近时面板变黑有过渡，窗口离开时变透明没有过渡 | St 的过渡是"旧/新样式交叉淡化"，过渡进行中如果再来一次**不同的**样式变更会被直接取消（`timeline_stop` + `completed`）。旧代码每次窗口 `notify::allocation` 都 remove+add 前景色 class，于是离开方向的过渡被杀掉；靠近方向因为 remove 是空操作而幸存 | `_applyAutoColorClass()` 幂等：只有判定结果真正变化才动 class |
 
 ---
@@ -132,30 +132,46 @@ overview 背景明显压暗（嵌套会话里实测 desktop≈0.80、overview≈
 
 `extension.js`：
 
-- **过渡标记**：`showing`/`hiding` 置 `_transitioning = true`，
-  `shown`/`hidden`（`_onBackgroundStateChanged()`）清零。
-  采样函数开始和结束都检查：
+- **不稳定的背景用截止时间标记**：`showing`/`hiding` 调用
+  `_markUnstable(OVERVIEW_UNSTABLE_TIME)`（300ms = 250ms 动画 + 余量）；
+  锁屏/解锁用 `SESSION_UNSTABLE_TIME`（500ms，幕布滑动约 300ms）。
+  `_scheduleSampling()` 把延迟夹到截止时间之后，
+  `_refreshBackgroundLuminance()` 在截止时间前被触发时按剩余时间重排，
+  而不是直接丢弃——这样无论哪个事件（壁纸变化、采样点数量、状态切换）
+  排的采样都不会落进过渡窗口。
 
   ```js
-  async _refreshBackgroundLuminance() {
-      if (this._transitioning)
-          return;
+  _markUnstable(durationMs) {
+      const nowMs = GLib.get_monotonic_time() / 1000;
+      this._unstableUntilMs = Math.max(this._unstableUntilMs, nowMs + durationMs);
+  }
+
+  _scheduleSampling(delay = SAMPLE_DELAY_WALLPAPER) {
       ...
-      if (generation !== this._sampleGeneration ||
-          this._transitioning ||
-          state !== this._currentBackgroundState) {
-          return;
-      }
+      const remaining = this._unstableUntilMs - GLib.get_monotonic_time() / 1000;
+      if (remaining > 0)
+          delay = Math.max(delay, Math.ceil(remaining));
+      ...
+  }
   ```
+
+  比最初单个布尔标记更稳的地方：`_onSessionModeUpdated()` 不会再把
+  overview 过渡的标记提前清掉，锁屏/解锁也自动获得同样的保护。
 
 - **缩短纠正延迟**：`SAMPLE_DELAY_STATE` 500 → 100ms。`shown`/`hidden`
   本身就是动画结束信号，不需要再等半个过渡。
+
+- **启用时先采一次、再确认一次**：以前 `enable()` 里 `_setTransparent()`
+  排的 100ms 采样会被 `_invalidateLuminance()` 的 1500ms 采样取消，
+  导致启用扩展后的 1.5s 内没有缓存、面板退回主题默认色（运行时启用
+  扩展时很显眼）。现在由透明转换触发快速采样，再由独立的 settle
+  定时器在 `SAMPLE_DELAY_WALLPAPER` 后调 `_invalidateLuminance(0)` 确认。
 
 - **失效时清缓存**：`_invalidateLuminance()`（壁纸、配色方案、
   显示器变化）现在会把**其它状态**的缓存删掉，避免"桌面壁纸换了，
   overview 缓存还是旧的"。
 
-- **兜底**：当前状态没有缓存时，用 deskop 的亮度做临时判断，
+- **兜底**：当前状态没有缓存时，用 desktop 的亮度做临时判断，
   而不是退回主题默认色（首次进入 overview 不再闪一下默认颜色）。
 
 ---
@@ -260,14 +276,11 @@ _applyAutoColorClass() {
 
 ```js
 if (darkText === true) {
-    if (!Main.panel.has_style_class_name(DARK_TEXT_CLASS)) {
-        Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
+    if (!Main.panel.has_style_class_name(DARK_TEXT_CLASS))
         Main.panel.add_style_class_name(DARK_TEXT_CLASS);
-    }
-} else if (darkText === false) {
-    ...
 } else {
-    // 不适用自动颜色（关闭/不透明/transparency=100）时清空
+    // 浅色是 #panel.transparent-top-bar 的默认样式，只需移除 dark class
+    Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
 }
 ```
 
@@ -292,6 +305,16 @@ if (darkText === true) {
   全量遍历窗口列表。
 - **变透明时重新采样**：面板刚由不透明变透明时，采样点可能一直被窗口
   盖着，缓存里是窗口内容的亮度；现在会安排一次新采样。
+- **删除死 CSS**：`.panel-corner` 面板角落 actor 在 GNOME 45 已被移除，
+  47 的 `panel.js`/主题和 50 的主题里都搜不到，而扩展样式表里有 408 行
+  相关规则（36%）。全部删除后 `stylesheet.css` 从 1118 行降到 606 行
+  （−46%），101 个透明度档位不变。
+- **删除死 class**：样式表里从来没有 `.transparent-top-bar-light-text`
+  规则，浅色一直由 `#panel.transparent-top-bar .panel-button` 的默认值
+  提供；现在 JS 只用 dark class，一个 class 控制两种状态。
+- **采样日志改为可选**：新增 `debug-logging` 设置（默认关），
+  把每次采样的 median/mean/耗时从系统日志移到开关后面；采样失败的
+  错误日志仍然始终记录。
 
 ---
 
@@ -305,7 +328,7 @@ if (darkText === true) {
 
 ```
 PASS initial desktop sample exists (desktop=0.8)
-PASS overview transition flag is set (visible=true)
+PASS background is marked unstable during the overview transition (unstableUntil-now=…ms)
 PASS sample during transition is discarded (overview=undefined)
 PASS sample after transition is accepted (overview=0.42)
 PASS panel becomes opaque when the window touches it

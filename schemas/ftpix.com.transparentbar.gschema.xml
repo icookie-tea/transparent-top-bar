@@ -37,5 +37,12 @@
             <summary>Disable text shadow</summary>
             <description>If true, text shadows will be disabled in the top bar. If false (default), text will have shadows to improve readability on transparent backgrounds.</description>
         </key>
+        <key type="b" name="debug-logging">
+            <default>false</default>
+            <summary>Debug logging</summary>
+            <description>Write the background sampling results (luminance, sample count,
+                duration) to the system log.
+            </description>
+        </key>
     </schema>
 </schemalist>
