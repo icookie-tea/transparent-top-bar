@@ -1046,6 +1046,12 @@
 #panel.transparent-top-bar:checked .system-status-icon {
   icon-shadow: black 0 2px 2px; }
 
+#panel.transparent-top-bar .workspace-dot {
+  box-shadow: 0px 1px 2px rgba(0, 0, 0, 0.9); }
+
+#panel.transparent-top-bar:hover .workspace-dot {
+  box-shadow: 0px 1px 6px black; }
+
 #panel.no-text-shadow .panel-button {
   text-shadow: none !important; }
 
@@ -1067,5 +1073,8 @@
 #panel.no-text-shadow:focus .system-status-icon,
 #panel.no-text-shadow:checked .system-status-icon {
   icon-shadow: none !important; }
+
+#panel.no-text-shadow .workspace-dot {
+  box-shadow: none !important; }
 
 /*# sourceMappingURL=stylesheet.css.map */
