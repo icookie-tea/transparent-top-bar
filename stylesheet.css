@@ -1024,23 +1024,23 @@
 
 #panel.transparent-top-bar .panel-button {
   color: #eee;
-  text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.9);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
   transition-duration: 100ms; }
 
 #panel.transparent-top-bar .system-status-icon,
 #panel.transparent-top-bar .messages-indicator,
 #panel.transparent-top-bar .app-menu-icon > StIcon,
 #panel.transparent-top-bar .popup-menu-arrow {
-  icon-shadow: 0px 1px 2px rgba(0, 0, 0, 0.9); }
+  icon-shadow: 0 1px 4px rgba(0, 0, 0, 0.5); }
 
 #panel.transparent-top-bar:hover {
-  text-shadow: 0px 1px 6px black; }
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); }
 
 #panel.transparent-top-bar:hover .system-status-icon,
 #panel.transparent-top-bar:hover .messages-indicator,
 #panel.transparent-top-bar:hover .app-menu-icon > StIcon,
 #panel.transparent-top-bar:hover .popup-menu-arrow {
-  icon-shadow: 0px 1px 6px black; }
+  icon-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); }
 
 #panel.transparent-top-bar:active .system-status-icon,
 #panel.transparent-top-bar:active .messages-indicator,
@@ -1050,13 +1050,13 @@
 #panel.transparent-top-bar:focus .messages-indicator,
 #panel.transparent-top-bar:checked .system-status-icon,
 #panel.transparent-top-bar:checked .messages-indicator {
-  icon-shadow: black 0 2px 2px; }
+  icon-shadow: 0 2px 4px rgba(0, 0, 0, 0.6); }
 
 #panel.transparent-top-bar .workspace-dot {
-  box-shadow: 0px 1px 2px rgba(0, 0, 0, 0.9); }
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45); }
 
 #panel.transparent-top-bar:hover .workspace-dot {
-  box-shadow: 0px 1px 6px black; }
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6); }
 
 #panel.no-text-shadow .panel-button {
   text-shadow: none !important; }
