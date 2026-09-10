@@ -57,7 +57,9 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._settingsChangedId = this._settings.connect('changed', (settings, key) => this.transparencyChanged(settings, key));
         this._actorSignalIds.set(Main.overview, [
             Main.overview.connect('showing', this._updateTransparent.bind(this)),
-            Main.overview.connect('hiding', this._updateTransparent.bind(this))
+            Main.overview.connect('hiding', this._updateTransparent.bind(this)),
+            Main.overview.connect('shown', this._applyAutoColorClass.bind(this)),
+            Main.overview.connect('hidden', this._applyAutoColorClass.bind(this))
         ]);
 
         this._actorSignalIds.set(Main.sessionMode, [
@@ -378,6 +380,13 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         const transparency = this._settings.get_int('transparency');
         if (transparency >= 100) {
+            return;
+        }
+
+        // The overview and the lock/login screens always draw a dark background,
+        // keep the shell's default light foreground there
+        if (Main.overview.visible || Main.panel.has_style_pseudo_class('overview') ||
+            !Main.sessionMode.hasWindows) {
             return;
         }
 
