@@ -41,6 +41,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._darkText = null;
         this._autoColorGeneration = 0;
         this._screenshot = null;
+        this._wallpaperSampleDeferred = false;
         this._settingsChangedId = null;
     }
 
@@ -59,11 +60,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             Main.overview.connect('showing', this._updateTransparent.bind(this)),
             Main.overview.connect('hiding', this._updateTransparent.bind(this)),
             Main.overview.connect('shown', this._applyAutoColorClass.bind(this)),
-            Main.overview.connect('hidden', this._applyAutoColorClass.bind(this))
+            Main.overview.connect('hidden', this._onOverviewHidden.bind(this))
         ]);
 
         this._actorSignalIds.set(Main.sessionMode, [
-            Main.sessionMode.connect('updated', this._updateTransparent.bind(this))
+            Main.sessionMode.connect('updated', this._onSessionModeUpdated.bind(this))
         ]);
 
         for (const metaWindowActor of global.get_window_actors()) {
@@ -283,6 +284,25 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._updateTextShadow();
     }
 
+    _onOverviewHidden() {
+        if (this._wallpaperSampleDeferred) {
+            this._wallpaperSampleDeferred = false;
+            this._scheduleWallpaperSampling(500);
+            return;
+        }
+
+        this._applyAutoColorClass();
+    }
+
+    _onSessionModeUpdated() {
+        this._updateTransparent();
+
+        if (this._wallpaperSampleDeferred && Main.sessionMode.hasWindows && !Main.overview.visible) {
+            this._wallpaperSampleDeferred = false;
+            this._scheduleWallpaperSampling(500);
+        }
+    }
+
     _scheduleWallpaperSampling(delay = WALLPAPER_SAMPLE_DELAY) {
         if (this._wallpaperSampleTimeoutId !== null) {
             GLib.source_remove(this._wallpaperSampleTimeoutId);
@@ -302,6 +322,15 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
     async _refreshWallpaperLuminance() {
         const generation = ++this._autoColorGeneration;
+
+        // The overview and the lock screen dim the background, so sampling now
+        // would cache a dark value that then gets applied to the real wallpaper
+        if (Main.overview.visible || !Main.sessionMode.hasWindows) {
+            this._wallpaperSampleDeferred = true;
+            return;
+        }
+
+        this._wallpaperSampleDeferred = false;
         const luminance = await this._sampleWallpaperLuminance();
 
         if (generation !== this._autoColorGeneration || !this._autoForegroundColor) {
