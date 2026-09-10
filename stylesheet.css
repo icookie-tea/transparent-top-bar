@@ -1028,6 +1028,7 @@
   transition-duration: 100ms; }
 
 #panel.transparent-top-bar .system-status-icon,
+#panel.transparent-top-bar .messages-indicator,
 #panel.transparent-top-bar .app-menu-icon > StIcon,
 #panel.transparent-top-bar .popup-menu-arrow {
   icon-shadow: 0px 1px 2px rgba(0, 0, 0, 0.9); }
@@ -1036,14 +1037,19 @@
   text-shadow: 0px 1px 6px black; }
 
 #panel.transparent-top-bar:hover .system-status-icon,
+#panel.transparent-top-bar:hover .messages-indicator,
 #panel.transparent-top-bar:hover .app-menu-icon > StIcon,
 #panel.transparent-top-bar:hover .popup-menu-arrow {
   icon-shadow: 0px 1px 6px black; }
 
 #panel.transparent-top-bar:active .system-status-icon,
+#panel.transparent-top-bar:active .messages-indicator,
 #panel.transparent-top-bar:overview .system-status-icon,
+#panel.transparent-top-bar:overview .messages-indicator,
 #panel.transparent-top-bar:focus .system-status-icon,
-#panel.transparent-top-bar:checked .system-status-icon {
+#panel.transparent-top-bar:focus .messages-indicator,
+#panel.transparent-top-bar:checked .system-status-icon,
+#panel.transparent-top-bar:checked .messages-indicator {
   icon-shadow: black 0 2px 2px; }
 
 #panel.transparent-top-bar .workspace-dot {
@@ -1059,19 +1065,25 @@
   text-shadow: none !important; }
 
 #panel.no-text-shadow .system-status-icon,
+#panel.no-text-shadow .messages-indicator,
 #panel.no-text-shadow .app-menu-icon > StIcon,
 #panel.no-text-shadow .popup-menu-arrow {
   icon-shadow: none !important; }
 
 #panel.no-text-shadow:hover .system-status-icon,
+#panel.no-text-shadow:hover .messages-indicator,
 #panel.no-text-shadow:hover .app-menu-icon > StIcon,
 #panel.no-text-shadow:hover .popup-menu-arrow {
   icon-shadow: none !important; }
 
 #panel.no-text-shadow:active .system-status-icon,
+#panel.no-text-shadow:active .messages-indicator,
 #panel.no-text-shadow:overview .system-status-icon,
+#panel.no-text-shadow:overview .messages-indicator,
 #panel.no-text-shadow:focus .system-status-icon,
-#panel.no-text-shadow:checked .system-status-icon {
+#panel.no-text-shadow:focus .messages-indicator,
+#panel.no-text-shadow:checked .system-status-icon,
+#panel.no-text-shadow:checked .messages-indicator {
   icon-shadow: none !important; }
 
 #panel.no-text-shadow .workspace-dot {
