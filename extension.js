@@ -11,11 +11,17 @@ const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 const DARK_TEXT_CLASS = 'transparent-top-bar-dark-text';
 const LIGHT_TEXT_CLASS = 'transparent-top-bar-light-text';
 
-// Wallpaper sampling for the auto foreground color
+// Background sampling for the auto foreground color
+const PanelBackgroundState = {
+    DESKTOP: 'desktop',
+    OVERVIEW: 'overview',
+    LOCK: 'lock',
+};
 const SAMPLE_COUNT = 12;
 const SAMPLE_OFFSET = 4;                // logical pixels below the panel
 const SAMPLE_MARGIN_RATIO = 0.02;       // keep away from the screen edges
-const WALLPAPER_SAMPLE_DELAY = 1500;    // ms, wait for the wallpaper cross-fade
+const SAMPLE_DELAY_WALLPAPER = 1500;    // ms, wait for the wallpaper cross-fade
+const SAMPLE_DELAY_STATE = 500;         // ms, wait for the overview/lock transition
 const DARK_TEXT_LUMINANCE_THRESHOLD = 0.5;
 const LUMINANCE_HYSTERESIS = 0.05;
 
@@ -36,13 +42,16 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._interfaceSettings = null;
         this._interfaceSettingsId = null;
         this._monitorsChangedId = null;
-        this._wallpaperSampleTimeoutId = null;
-        this._wallpaperLuminance = null;
-        this._darkText = null;
-        this._autoColorGeneration = 0;
+        this._sampleTimeoutId = null;
+        this._sampleGeneration = 0;
         this._screenshot = null;
-        this._wallpaperSampleDeferred = false;
         this._settingsChangedId = null;
+
+        // The overview, the lock screen and the desktop can all render a
+        // different background (e.g. Blur my Shell blurs and brightens the
+        // overview), so keep a separate luminance per state
+        this._luminance = new Map();
+        this._darkText = new Map();
     }
 
     enable() {
@@ -59,8 +68,8 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._actorSignalIds.set(Main.overview, [
             Main.overview.connect('showing', this._updateTransparent.bind(this)),
             Main.overview.connect('hiding', this._updateTransparent.bind(this)),
-            Main.overview.connect('shown', this._applyAutoColorClass.bind(this)),
-            Main.overview.connect('hidden', this._onOverviewHidden.bind(this))
+            Main.overview.connect('shown', this._onBackgroundStateChanged.bind(this)),
+            Main.overview.connect('hidden', this._onBackgroundStateChanged.bind(this))
         ]);
 
         this._actorSignalIds.set(Main.sessionMode, [
@@ -81,20 +90,20 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             global.window_manager.connect('switch-workspace', this._updateTransparentDelayed.bind(this))
         ]);
 
-        // Re-sample the wallpaper when the background or the dark style preference changes
+        // Re-sample the background when the wallpaper or the dark style preference changes
         this._backgroundSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.background'});
         this._backgroundSettingsIds = [
-            this._backgroundSettings.connect('changed::picture-uri', () => this._scheduleWallpaperSampling()),
-            this._backgroundSettings.connect('changed::picture-uri-dark', () => this._scheduleWallpaperSampling())
+            this._backgroundSettings.connect('changed::picture-uri', () => this._invalidateLuminance()),
+            this._backgroundSettings.connect('changed::picture-uri-dark', () => this._invalidateLuminance())
         ];
 
         this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
-        this._interfaceSettingsId = this._interfaceSettings.connect('changed::color-scheme', () => this._scheduleWallpaperSampling());
+        this._interfaceSettingsId = this._interfaceSettings.connect('changed::color-scheme', () => this._invalidateLuminance());
 
-        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._scheduleWallpaperSampling());
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._invalidateLuminance());
 
         this._updateTransparent();
-        this._scheduleWallpaperSampling(1000);
+        this._invalidateLuminance();
     }
 
     transparencyChanged(settings, key) {
@@ -131,13 +140,13 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         if (key === AUTO_FOREGROUND_COLOR) {
             this._autoForegroundColor = this._settings.get_boolean(AUTO_FOREGROUND_COLOR);
-            this._autoColorGeneration++;
+            this._sampleGeneration++;
 
             if (this._autoForegroundColor) {
-                this._scheduleWallpaperSampling(250);
+                this._invalidateLuminance();
             } else {
-                this._wallpaperLuminance = null;
-                this._darkText = null;
+                this._luminance.clear();
+                this._darkText.clear();
                 this._applyAutoColorClass();
             }
             return;
@@ -169,12 +178,12 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
         this._delayedTimeoutId = null;
 
-        if (this._wallpaperSampleTimeoutId !== null) {
-            GLib.source_remove(this._wallpaperSampleTimeoutId);
-            this._wallpaperSampleTimeoutId = null;
+        if (this._sampleTimeoutId !== null) {
+            GLib.source_remove(this._sampleTimeoutId);
+            this._sampleTimeoutId = null;
         }
 
-        this._autoColorGeneration++;
+        this._sampleGeneration++;
         for (const signalId of this._backgroundSettingsIds ?? []) {
             this._backgroundSettings.disconnect(signalId);
         }
@@ -193,8 +202,8 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
 
         this._screenshot = null;
-        this._wallpaperLuminance = null;
-        this._darkText = null;
+        this._luminance.clear();
+        this._darkText.clear();
 
         this._setTransparent(false);
         Main.panel.remove_style_class_name('no-text-shadow');
@@ -284,64 +293,73 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._updateTextShadow();
     }
 
-    _onOverviewHidden() {
-        if (this._wallpaperSampleDeferred) {
-            this._wallpaperSampleDeferred = false;
-            this._scheduleWallpaperSampling(500);
-            return;
+    get _currentBackgroundState() {
+        if (Main.overview.visible) {
+            return PanelBackgroundState.OVERVIEW;
         }
 
-        this._applyAutoColorClass();
+        if (Main.sessionMode.isLocked || !Main.sessionMode.hasWindows) {
+            return PanelBackgroundState.LOCK;
+        }
+
+        return PanelBackgroundState.DESKTOP;
     }
 
     _onSessionModeUpdated() {
         this._updateTransparent();
-
-        if (this._wallpaperSampleDeferred && Main.sessionMode.hasWindows && !Main.overview.visible) {
-            this._wallpaperSampleDeferred = false;
-            this._scheduleWallpaperSampling(500);
-        }
+        this._onBackgroundStateChanged();
     }
 
-    _scheduleWallpaperSampling(delay = WALLPAPER_SAMPLE_DELAY) {
-        if (this._wallpaperSampleTimeoutId !== null) {
-            GLib.source_remove(this._wallpaperSampleTimeoutId);
-            this._wallpaperSampleTimeoutId = null;
+    /**
+     * Called when the background behind the panel may have changed as a whole
+     * (overview shown/hidden, session locked/unlocked).
+     */
+    _onBackgroundStateChanged() {
+        this._applyAutoColorClass();
+
+        // Always re-sample: the state background (overview blur, lock screen)
+        // can change without a setting we are able to watch
+        this._scheduleSampling(SAMPLE_DELAY_STATE);
+    }
+
+    _invalidateLuminance() {
+        this._scheduleSampling();
+    }
+
+    _scheduleSampling(delay = SAMPLE_DELAY_WALLPAPER) {
+        if (this._sampleTimeoutId !== null) {
+            GLib.source_remove(this._sampleTimeoutId);
+            this._sampleTimeoutId = null;
         }
 
         if (!this._autoForegroundColor) {
             return;
         }
 
-        this._wallpaperSampleTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
-            this._wallpaperSampleTimeoutId = null;
-            this._refreshWallpaperLuminance();
+        this._sampleTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
+            this._sampleTimeoutId = null;
+            this._refreshBackgroundLuminance();
             return GLib.SOURCE_REMOVE;
         });
     }
 
-    async _refreshWallpaperLuminance() {
-        const generation = ++this._autoColorGeneration;
+    async _refreshBackgroundLuminance() {
+        const state = this._currentBackgroundState;
+        const generation = ++this._sampleGeneration;
+        const luminance = await this._sampleBackgroundLuminance(state);
 
-        // The overview and the lock screen dim the background, so sampling now
-        // would cache a dark value that then gets applied to the real wallpaper
-        if (Main.overview.visible || !Main.sessionMode.hasWindows) {
-            this._wallpaperSampleDeferred = true;
+        if (generation !== this._sampleGeneration || state !== this._currentBackgroundState) {
             return;
         }
 
-        this._wallpaperSampleDeferred = false;
-        const luminance = await this._sampleWallpaperLuminance();
-
-        if (generation !== this._autoColorGeneration || !this._autoForegroundColor) {
-            return;
+        if (luminance !== null) {
+            this._luminance.set(state, luminance);
         }
 
-        this._wallpaperLuminance = luminance;
         this._applyAutoColorClass();
     }
 
-    async _sampleWallpaperLuminance() {
+    async _sampleBackgroundLuminance(state) {
         const monitor = Main.layoutManager.primaryMonitor;
         if (monitor === null) {
             return null;
@@ -375,7 +393,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
                 // Cogl.Color channels are 0-255; 0.3/0.59/0.11 is what elementary OS uses
                 luminances.push((0.3 * color.red + 0.59 * color.green + 0.11 * color.blue) / 255);
             } catch (e) {
-                log(`Transparent Top Bar: failed to sample wallpaper at ${x}, ${y}: ${e.message}`);
+                log(`Transparent Top Bar: failed to sample background at ${x}, ${y}: ${e.message}`);
             }
         }
 
@@ -388,8 +406,8 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         const median = sorted[Math.floor(sorted.length / 2)];
         const mean = luminances.reduce((sum, value) => sum + value, 0) / luminances.length;
 
-        log('Transparent Top Bar: wallpaper luminance ' +
-            `median=${median.toFixed(3)} mean=${mean.toFixed(3)} ` +
+        log('Transparent Top Bar: panel background luminance ' +
+            `[${state}] median=${median.toFixed(3)} mean=${mean.toFixed(3)} ` +
             `(${luminances.length}/${SAMPLE_COUNT} samples in ${elapsedMs.toFixed(1)} ms)`);
 
         return median;
@@ -399,7 +417,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
         Main.panel.remove_style_class_name(LIGHT_TEXT_CLASS);
 
-        if (!this._autoForegroundColor || this._wallpaperLuminance === null) {
+        if (!this._autoForegroundColor) {
             return;
         }
 
@@ -412,25 +430,25 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             return;
         }
 
-        // The overview and the lock/login screens always draw a dark background,
-        // keep the shell's default light foreground there
-        if (Main.overview.visible || Main.panel.has_style_pseudo_class('overview') ||
-            !Main.sessionMode.hasWindows) {
+        const state = this._currentBackgroundState;
+        const luminance = this._luminance.get(state);
+        if (luminance === undefined) {
             return;
         }
 
-        // the bar itself is rgba(0, 0, 0, transparency%), so it darkens the wallpaper behind it
-        const effective = this._wallpaperLuminance * (1 - transparency / 100);
+        // the bar itself is rgba(0, 0, 0, transparency%), so it darkens its background
+        const effective = luminance * (1 - transparency / 100);
         const threshold = DARK_TEXT_LUMINANCE_THRESHOLD;
 
         let darkText;
-        if (this._darkText !== null && Math.abs(effective - threshold) < LUMINANCE_HYSTERESIS) {
-            darkText = this._darkText;
+        const previous = this._darkText.get(state);
+        if (previous !== undefined && Math.abs(effective - threshold) < LUMINANCE_HYSTERESIS) {
+            darkText = previous;
         } else {
             darkText = effective > threshold;
         }
 
-        this._darkText = darkText;
+        this._darkText.set(state, darkText);
         Main.panel.add_style_class_name(darkText ? DARK_TEXT_CLASS : LIGHT_TEXT_CLASS);
     }
 
