@@ -315,6 +315,13 @@ if (darkText === true) {
 - **采样日志改为可选**：新增 `debug-logging` 设置（默认关），
   把每次采样的 median/mean/耗时从系统日志移到开关后面；采样失败的
   错误日志仍然始终记录。
+- **文本阴影拆成两个设置**：以前 `disable-text-shadow` 一个开关同时
+  控制浅色文字的黑色阴影和深色文字的白色阴影，在深色文字模式下会
+  连白色阴影一起关掉，反之也无法只关白色阴影。现在拆成
+  `disable-black-text-shadow` / `disable-white-text-shadow`，
+  JS 按当前是否有 `transparent-top-bar-dark-text` 类来选择生效的开关，
+  CSS 仍然只用一个幂等的 `no-text-shadow` 类（同样避免打断正在跑的
+  背景过渡）。旧键保留在 schema 里，启用时一次性迁移到两个新键。
 
 ---
 

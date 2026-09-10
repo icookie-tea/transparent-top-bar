@@ -5,7 +5,8 @@ import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Ex
 
 const TRANSPARENCY = 'transparency';
 const DARK_FULL_SCREEN = 'dark-full-screen';
-const DISABLE_TEXT_SHADOW = 'disable-text-shadow';
+const DISABLE_BLACK_TEXT_SHADOW = 'disable-black-text-shadow';
+const DISABLE_WHITE_TEXT_SHADOW = 'disable-white-text-shadow';
 const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 const FOREGROUND_LUMINANCE_THRESHOLD = 'foreground-luminance-threshold';
 const SAMPLE_COUNT = 'sample-count';
@@ -61,11 +62,19 @@ export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
         settings.bind(DARK_FULL_SCREEN, opaqueRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         barGroup.add(opaqueRow);
 
-        const shadowRow = new Adw.SwitchRow({
-            title: _('Disable text shadow'),
+        const blackShadowRow = new Adw.SwitchRow({
+            title: _('Disable black text shadow'),
+            subtitle: _('Behind the default light top bar text and icons'),
         });
-        settings.bind(DISABLE_TEXT_SHADOW, shadowRow, 'active', Gio.SettingsBindFlags.DEFAULT);
-        barGroup.add(shadowRow);
+        settings.bind(DISABLE_BLACK_TEXT_SHADOW, blackShadowRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        barGroup.add(blackShadowRow);
+
+        const whiteShadowRow = new Adw.SwitchRow({
+            title: _('Disable white text shadow'),
+            subtitle: _('Behind the dark text and icons used on bright backgrounds'),
+        });
+        settings.bind(DISABLE_WHITE_TEXT_SHADOW, whiteShadowRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        barGroup.add(whiteShadowRow);
 
         const colorGroup = new Adw.PreferencesGroup({
             title: _('Automatic foreground color'),

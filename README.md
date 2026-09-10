@@ -20,8 +20,9 @@ by zhanghai and lamarios, with:
   several places and the median luminance picks dark or light text. The
   overview and lock screen backgrounds are sampled separately, so extensions
   that change the overview backdrop (e.g. Blur my Shell) are handled too.
-- **Disable text shadow** – for wallpapers where the shadow hurts more than it
-  helps.
+- **Separate black and white text shadows** – the black shadow of the default
+  light foreground and the white shadow of the dark foreground can be turned
+  off independently.
 - **Debug logging** – optional sampling diagnostics in the system log.
 
 ## Install

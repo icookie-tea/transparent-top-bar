@@ -16,6 +16,8 @@
 | B | 窗口离开 300ms 后再触发一次 `_updateTransparent()`：面板背景仍在淡出中途（既不是全黑也不是全透明） |
 | B | 过渡结束后面板完全透明 |
 | C | 进入 overview 后，稳态采样结果被记录，且与桌面亮度不同 |
+| D | 强制深色文字（低阈值）：白色阴影开关生效、黑色阴影开关不影响 |
+| D | 强制浅色文字（高阈值）：黑色阴影开关生效，且可以重新打开 |
 
 其中 B 的中途检查依靠 `Shell.Screenshot.pick_color` 读面板顶部像素：
 `0` = 不透明黑，`0.8` = 背景色，中间值说明过渡没有被取消。
@@ -78,6 +80,9 @@ FAIL panel background is still fading mid-way (opaque=0 mid=0.8 final=0.8)
 ```
 
 `mid=0.8 final=0.8` 表示面板背景被样式变更打断了过渡、直接跳到透明。
+
+测试 D 依赖两个新的阴影键，旧代码上会打印
+`INFO pre-fix code: no separate text shadow settings` 并跳过。
 
 ## 目录结构
 

@@ -10,6 +10,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 const DEBUG_LOGGING = 'debug-logging';
 const DARK_TEXT_CLASS = 'transparent-top-bar-dark-text';
+const NO_TEXT_SHADOW_CLASS = 'no-text-shadow';
+const DISABLE_BLACK_TEXT_SHADOW = 'disable-black-text-shadow';
+const DISABLE_WHITE_TEXT_SHADOW = 'disable-white-text-shadow';
+// Deprecated: replaced by the two per-foreground keys above
+const DEPRECATED_DISABLE_TEXT_SHADOW = 'disable-text-shadow';
 
 // Background sampling for the auto foreground color
 const PanelBackgroundState = {
@@ -69,7 +74,17 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._settings = this.getSettings();
         this._currentTransparency = this._settings.get_int('transparency');
         this._darkFullScreen = this._settings.get_boolean('dark-full-screen');
-        this._disableTextShadow = this._settings.get_boolean('disable-text-shadow');
+
+        // The single "disable text shadow" switch became two switches, one
+        // per foreground color; migrate the old value once
+        if (this._settings.get_boolean(DEPRECATED_DISABLE_TEXT_SHADOW)) {
+            this._settings.set_boolean(DISABLE_BLACK_TEXT_SHADOW, true);
+            this._settings.set_boolean(DISABLE_WHITE_TEXT_SHADOW, true);
+            this._settings.reset(DEPRECATED_DISABLE_TEXT_SHADOW);
+        }
+        this._disableBlackTextShadow = this._settings.get_boolean(DISABLE_BLACK_TEXT_SHADOW);
+        this._disableWhiteTextShadow = this._settings.get_boolean(DISABLE_WHITE_TEXT_SHADOW);
+
         this._autoForegroundColor = this._settings.get_boolean(AUTO_FOREGROUND_COLOR);
         this._debugLogging = this._settings.get_boolean(DEBUG_LOGGING);
 
@@ -169,8 +184,9 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             return;
         }
 
-        if (key === 'disable-text-shadow') {
-            this._disableTextShadow = this._settings.get_boolean('disable-text-shadow');
+        if (key === DISABLE_BLACK_TEXT_SHADOW || key === DISABLE_WHITE_TEXT_SHADOW) {
+            this._disableBlackTextShadow = this._settings.get_boolean(DISABLE_BLACK_TEXT_SHADOW);
+            this._disableWhiteTextShadow = this._settings.get_boolean(DISABLE_WHITE_TEXT_SHADOW);
             if (this.textShadowChangeDebounce !== null)
                 GLib.source_remove(this.textShadowChangeDebounce);
             this.textShadowChangeDebounce = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
@@ -289,7 +305,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._panelTransparent = false;
         this._unstableUntilMs = 0;
         this._setTransparent(false);
-        Main.panel.remove_style_class_name('no-text-shadow');
+        Main.panel.remove_style_class_name(NO_TEXT_SHADOW_CLASS);
         this._settings = null;
     }
 
@@ -336,10 +352,20 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     _updateTextShadow() {
-        if (this._disableTextShadow) {
-            Main.panel.add_style_class_name('no-text-shadow');
+        // Dark text (used on bright backgrounds) carries a white shadow, the
+        // default light text a black one; the two are separate settings, so
+        // pick the one that belongs to the foreground currently in use
+        const shadowsDisabled = Main.panel.has_style_class_name(DARK_TEXT_CLASS)
+            ? this._disableWhiteTextShadow
+            : this._disableBlackTextShadow;
+
+        // Idempotent: a real class change cancels the panel background
+        // transition St is animating
+        if (shadowsDisabled) {
+            if (!Main.panel.has_style_class_name(NO_TEXT_SHADOW_CLASS))
+                Main.panel.add_style_class_name(NO_TEXT_SHADOW_CLASS);
         } else {
-            Main.panel.remove_style_class_name('no-text-shadow');
+            Main.panel.remove_style_class_name(NO_TEXT_SHADOW_CLASS);
         }
     }
 
@@ -401,7 +427,6 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
 
         this._applyAutoColorClass();
-        this._updateTextShadow();
     }
 
     get _currentBackgroundState() {
@@ -638,6 +663,9 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         } else {
             Main.panel.remove_style_class_name(DARK_TEXT_CLASS);
         }
+
+        // The text shadow depends on which foreground is active
+        this._updateTextShadow();
     }
 
 };

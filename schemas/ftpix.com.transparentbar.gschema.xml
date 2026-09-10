@@ -32,10 +32,27 @@
             <summary>Background sample points</summary>
             <description>Number of points sampled from the background behind the top bar.</description>
         </key>
+        <key type="b" name="disable-black-text-shadow">
+            <default>false</default>
+            <summary>Disable the black text shadow</summary>
+            <description>If true, the black text and icon shadow behind the default
+                light top bar text is disabled.
+            </description>
+        </key>
+        <key type="b" name="disable-white-text-shadow">
+            <default>false</default>
+            <summary>Disable the white text shadow</summary>
+            <description>If true, the white text and icon shadow behind the dark top
+                bar text (used on bright backgrounds) is disabled.
+            </description>
+        </key>
         <key type="b" name="disable-text-shadow">
             <default>false</default>
-            <summary>Disable text shadow</summary>
-            <description>If true, text shadows will be disabled in the top bar. If false (default), text will have shadows to improve readability on transparent backgrounds.</description>
+            <summary>Disable text shadow (deprecated)</summary>
+            <description>Deprecated: replaced by disable-black-text-shadow and
+                disable-white-text-shadow; migrated automatically when the extension is
+                enabled.
+            </description>
         </key>
         <key type="b" name="debug-logging">
             <default>false</default>

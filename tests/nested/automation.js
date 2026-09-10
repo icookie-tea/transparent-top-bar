@@ -6,6 +6,8 @@
 //  B. The panel background transition must survive the opaque -> transparent
 //     change when the panel style is touched again while St animates it.
 //  C. Overview samples are taken while stable and end up cached.
+//  D. The black and white text shadows have independent settings; only the
+//     one matching the active foreground decides the no-text-shadow class.
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
@@ -206,6 +208,63 @@ export async function run() {
             `desktop=${beforeOverview} overview=${overviewLum}`);
         Main.overview.hide();
         await sleep(600);
+
+        // --- D: separate black/white text shadow settings ----------------
+        if (typeof ext._disableWhiteTextShadow === 'boolean') {
+            const hasNoShadow = () => Main.panel.has_style_class_name('no-text-shadow');
+            const hasDarkText = () => Main.panel.has_style_class_name('transparent-top-bar-dark-text');
+            const setThreshold = async value => {
+                ext._settings.set_double('foreground-luminance-threshold', value);
+                await sleep(300);
+            };
+            const setShadow = async (key, value) => {
+                ext._settings.set_boolean(key, value);
+                await sleep(400);   // the extension debounces the change by 250ms
+            };
+
+            // The test background has luminance 0.8: a low threshold forces
+            // dark text, a high one forces light text
+            await setThreshold(0.1);
+            check('dark text is active before the shadow checks', hasDarkText());
+
+            await setShadow('disable-black-text-shadow', false);
+            await setShadow('disable-white-text-shadow', false);
+            check('shadows enabled adds no no-text-shadow class', !hasNoShadow());
+
+            await setShadow('disable-white-text-shadow', true);
+            check('white shadow setting applies to dark text', hasNoShadow());
+
+            await setShadow('disable-white-text-shadow', false);
+            await setShadow('disable-black-text-shadow', true);
+            check('black shadow setting does not affect dark text', !hasNoShadow());
+
+            await setThreshold(0.9);
+            check('light text is active with a high threshold', !hasDarkText());
+            check('black shadow setting applies to light text', hasNoShadow());
+
+            await setShadow('disable-black-text-shadow', false);
+            check('black shadow can be re-enabled', !hasNoShadow());
+
+            await setThreshold(0.7);
+            ext._settings.reset('disable-black-text-shadow');
+            ext._settings.reset('disable-white-text-shadow');
+
+            // The deprecated single switch is migrated on the next enable
+            ext._settings.set_boolean('disable-text-shadow', true);
+            ext.disable();
+            ext.enable();
+            await sleep(600);
+            const migratedBlack = ext._settings.get_boolean('disable-black-text-shadow');
+            const migratedWhite = ext._settings.get_boolean('disable-white-text-shadow');
+            const oldValue = ext._settings.get_boolean('disable-text-shadow');
+            check('deprecated shadow switch migrates to both new keys',
+                migratedBlack && migratedWhite && !oldValue,
+                `black=${migratedBlack} white=${migratedWhite} old=${oldValue}`);
+            ext._settings.reset('disable-black-text-shadow');
+            ext._settings.reset('disable-white-text-shadow');
+        } else {
+            info('pre-fix code: no separate text shadow settings');
+        }
     } catch (e) {
         failures.push(String(e));
         logError(e, `${TAG} test run failed`);
