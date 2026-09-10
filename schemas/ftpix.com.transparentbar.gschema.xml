@@ -13,6 +13,13 @@
                 bar, false and the bar remains transparent at all time
             </description>
         </key>
+        <key type="b" name="auto-foreground-color">
+            <default>true</default>
+            <summary>Automatic foreground color</summary>
+            <description>Sample the wallpaper behind the top bar and use dark text on bright wallpapers, light text on
+                dark wallpapers.
+            </description>
+        </key>
         <key type="b" name="disable-text-shadow">
             <default>false</default>
             <summary>Disable text shadow</summary>

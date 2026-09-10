@@ -5,14 +5,16 @@ import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Ex
 const TRANSPARENCY = 'transparency';
 const DARK_FULL_SCREEN = 'dark-full-screen';
 const DISABLE_TEXT_SHADOW = 'disable-text-shadow';
+const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 
 export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
 
     fillPreferencesWindow(window) {
         window._settings = this.getSettings('com.ftpix.transparentbar');
         const opacity = window._settings.get_int(TRANSPARENCY);
-        const darkFullScreen = window._settings.get_boolean(DARK_FULL_SCREEN);
+        const opaqueWhenTouched = window._settings.get_boolean(DARK_FULL_SCREEN);
         const disableTextShadow = window._settings.get_boolean(DISABLE_TEXT_SHADOW);
+        const autoForegroundColor = window._settings.get_boolean(AUTO_FOREGROUND_COLOR);
 
         const page = new Adw.PreferencesPage();
 
@@ -43,7 +45,7 @@ export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
         //row.set_homogeneous(true);
 
         const sw = new Gtk.Switch();
-        sw.set_active(darkFullScreen);
+        sw.set_active(opaqueWhenTouched);
         sw.connect('state-set', (sw) => {
             window._settings.set_boolean(DARK_FULL_SCREEN, sw.get_active());
         });
@@ -56,6 +58,26 @@ export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
         row.append(label);
         row.append(sw);
         group.add(row);
+
+        const autoColorRow = new Gtk.Box();
+        autoColorRow.set_orientation(Gtk.HORIZONTAL);
+        autoColorRow.set_margin_top(20);
+        autoColorRow.set_margin_bottom(20);
+
+        const autoColorSwitch = new Gtk.Switch();
+        autoColorSwitch.set_active(autoForegroundColor);
+        autoColorSwitch.connect('state-set', (sw) => {
+            window._settings.set_boolean(AUTO_FOREGROUND_COLOR, sw.get_active());
+        });
+        autoColorSwitch.set_halign(Gtk.Align.END);
+
+        const autoColorLabel = Gtk.Label.new('Dark or light text depending on the wallpaper');
+        autoColorLabel.set_hexpand(true);
+        autoColorLabel.set_halign(Gtk.Align.START);
+
+        autoColorRow.append(autoColorLabel);
+        autoColorRow.append(autoColorSwitch);
+        group.add(autoColorRow);
 
         const shadowRow = new Gtk.Box();
         shadowRow.set_orientation(Gtk.HORIZONTAL);

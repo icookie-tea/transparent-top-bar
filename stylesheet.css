@@ -1089,4 +1089,30 @@
 #panel.no-text-shadow .workspace-dot {
   box-shadow: none !important; }
 
+/* Auto foreground color: dark text on bright wallpapers */
+#panel.transparent-top-bar-dark-text .panel-button {
+  color: rgba(0, 0, 0, 0.75);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.45);
+  transition-duration: 100ms; }
+
+#panel.transparent-top-bar-dark-text .system-status-icon,
+#panel.transparent-top-bar-dark-text .messages-indicator,
+#panel.transparent-top-bar-dark-text .app-menu-icon > StIcon,
+#panel.transparent-top-bar-dark-text .popup-menu-arrow {
+  icon-shadow: 0 1px 0 rgba(255, 255, 255, 0.45); }
+
+#panel.transparent-top-bar-dark-text .panel-button#panelActivities .workspace-dot {
+  background-color: rgba(0, 0, 0, 0.75);
+  box-shadow: 0 1px 2px rgba(255, 255, 255, 0.45); }
+
+/* Keep the white text and icons of the colored recording/sharing pills */
+#panel.transparent-top-bar-dark-text .panel-button.screen-recording-indicator,
+#panel.transparent-top-bar-dark-text .panel-button.screen-sharing-indicator {
+  color: #fafafb;
+  text-shadow: none; }
+
+#panel.transparent-top-bar-dark-text .panel-button.screen-recording-indicator .system-status-icon,
+#panel.transparent-top-bar-dark-text .panel-button.screen-sharing-indicator .system-status-icon {
+  icon-shadow: none; }
+
 /*# sourceMappingURL=stylesheet.css.map */
