@@ -47,6 +47,9 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._screenshot = null;
         this._settingsChangedId = null;
 
+        // BackgroundManager (shell side) -> signal id
+        this._bgManagerSignalIds = new Map();
+
         // The overview, the lock screen and the desktop can all render a
         // different background (e.g. Blur my Shell blurs and brightens the
         // overview), so keep a separate luminance per state
@@ -100,7 +103,21 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
         this._interfaceSettingsId = this._interfaceSettings.connect('changed::color-scheme', () => this._invalidateLuminance());
 
-        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._invalidateLuminance());
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+            this._invalidateLuminance();
+
+            // The layout manager recreates the background managers around this
+            // signal, so re-hook them once it has settled
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                this._hookBackgroundManagers();
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+
+        // A wallpaper can be replaced in place (same URI, new file contents),
+        // which does not change picture-uri; the shell's BackgroundManager
+        // notices it and emits 'changed'
+        this._hookBackgroundManagers();
 
         this._updateTransparent();
         this._invalidateLuminance();
@@ -210,6 +227,11 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
             Main.layoutManager.disconnect(this._monitorsChangedId);
             this._monitorsChangedId = null;
         }
+
+        for (const [manager, signalId] of this._bgManagerSignalIds) {
+            manager.disconnect(signalId);
+        }
+        this._bgManagerSignalIds.clear();
 
         this._screenshot = null;
         this._luminance.clear();
@@ -334,6 +356,28 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
     _invalidateLuminance() {
         this._scheduleSampling();
+    }
+
+    _hookBackgroundManagers() {
+        // Private API, but it is the only reliable way to notice a wallpaper
+        // that changed in place (same URI, new file contents) or a slideshow
+        const managers = Main.layoutManager._bgManagers ?? [];
+
+        for (const [manager, signalId] of this._bgManagerSignalIds) {
+            if (!managers.includes(manager)) {
+                manager.disconnect(signalId);
+                this._bgManagerSignalIds.delete(manager);
+            }
+        }
+
+        for (const manager of managers) {
+            if (this._bgManagerSignalIds.has(manager)) {
+                continue;
+            }
+
+            const signalId = manager.connect('changed', () => this._invalidateLuminance());
+            this._bgManagerSignalIds.set(manager, signalId);
+        }
     }
 
     _scheduleSampling(delay = SAMPLE_DELAY_WALLPAPER) {
