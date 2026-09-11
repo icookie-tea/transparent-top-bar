@@ -1,6 +1,6 @@
 # 行为测试（嵌套 GNOME Shell）
 
-这里保存的是两个"时序型"bug 的回归测试。它们和 250/500ms 级别的过渡动画
+这里保存的是三个"时序型"bug 的回归测试。它们和 250/500ms 级别的过渡动画
 交错发生，手动操作很难稳定复现，所以测试在 toolbox 容器里的一个
 **嵌套 GNOME Shell**（`gnome-shell --devkit`）中自动执行。
 
@@ -16,10 +16,12 @@
 | B | 窗口离开 300ms 后再触发一次 `_updateTransparent()`：面板背景仍在淡出中途（既不是全黑也不是全透明） |
 | B | 过渡结束后面板完全透明 |
 | C | 进入 overview 后，稳态采样结果被记录，且与桌面亮度不同 |
-| D | 强制深色文字（低阈值）：白色阴影开关生效、黑色阴影开关不影响 |
-| D | 强制浅色文字（高阈值）：黑色阴影开关生效，且可以重新打开 |
+| D | 全屏大小的深色窗口盖住面板时，overview 往返不会把窗口内容写进桌面亮度缓存 |
+| D | 该往返之后窗口离开：面板背景仍在淡出中途（前景色 class 没有在过渡中途变化） |
+| E | 强制深色文字（低阈值）：白色阴影开关生效、黑色阴影开关不影响 |
+| E | 强制浅色文字（高阈值）：黑色阴影开关生效，且可以重新打开 |
 
-其中 B 的中途检查依靠 `Shell.Screenshot.pick_color` 读面板顶部像素：
+其中 B、D 的中途检查依靠 `Shell.Screenshot.pick_color` 读面板顶部像素：
 `0` = 不透明黑，`0.8` = 背景色，中间值说明过渡没有被取消。
 
 ## 运行
@@ -77,11 +79,18 @@ git stash pop
 ```
 FAIL sample during transition is discarded (overview=0.42)
 FAIL panel background is still fading mid-way (opaque=0 mid=0.8 final=0.8)
+FAIL window content is not sampled as the desktop background (covered=0.063 wallpaper=0.800 desktop=0.063)
+FAIL panel background still fades after an overview round trip (mid=0.8 final=0.8)
 ```
 
-`mid=0.8 final=0.8` 表示面板背景被样式变更打断了过渡、直接跳到透明。
+`mid=0.8 final=0.8` 表示面板背景被样式变更打断了过渡、直接跳到透明；
+`desktop=0.063` 表示桌面亮度缓存被写成了盖在面板前的窗口内容。
 
-测试 D 依赖两个新的阴影键，旧代码上会打印
+测试 D 全屏大小的深色窗口需要 `test-window.js` 把自己画成深色（模拟
+全屏终端），亮色壁纸 + 深色窗口才能让被污染的值和真实壁纸落在
+`foreground-luminance-threshold` 的两侧。
+
+测试 E 依赖两个新的阴影键，旧代码上会打印
 `INFO pre-fix code: no separate text shadow settings` 并跳过。
 
 ## 目录结构

@@ -6,7 +6,10 @@
 //  B. The panel background transition must survive the opaque -> transparent
 //     change when the panel style is touched again while St animates it.
 //  C. Overview samples are taken while stable and end up cached.
-//  D. The black and white text shadows have independent settings; only the
+//  D. A window in front of the panel must not be sampled as the desktop
+//     background: after an overview round trip the panel still has to fade
+//     out instead of flipping the foreground class mid-transition.
+//  E. The black and white text shadows have independent settings; only the
 //     one matching the active foreground decides the no-text-shadow class.
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
@@ -121,6 +124,14 @@ export async function run() {
                 await sleep(600); // overview transition is 250ms
         };
 
+        // Start from a hidden, settled overview: the shell re-shows the
+        // startup overview while the session settles, and show() on an
+        // already visible overview emits nothing
+        if (Main.overview.visible)
+            Main.overview.hide();
+        await waitFor(() => !Main.overview.visible &&
+                            (!extHasDeadline || ext._unstableUntilMs <= nowMs()), 5000, 100);
+
         const originalSample = ext._sampleBackgroundLuminance;
         const SENTINEL = 0.42;
         ext._sampleBackgroundLuminance = async () => SENTINEL;
@@ -209,7 +220,47 @@ export async function run() {
         Main.overview.hide();
         await sleep(600);
 
-        // --- D: separate black/white text shadow settings ----------------
+        // --- D: no sampling through a window in front of the panel --------
+        // An overview round trip with a fullscreen-like window keeps the
+        // panel opaque; a desktop sample taken then reads the window content
+        // and the corrected value arrives after the panel started fading
+        // out, so the foreground class change killed the transition.
+        const monitor = Main.layoutManager.primaryMonitor;
+        const coverProbeY = Math.round(panelY + Main.panel.get_height() + 4);
+
+        win.move_resize_frame(true, monitor.x, monitor.y, monitor.width, monitor.height);
+        await waitFor(() => !Main.panel.has_style_class_name('transparent-top-bar'), 3000, 100);
+        await sleep(600);
+        const coveredLum = await samplePixel(Math.round(monitor.x + monitor.width / 2), coverProbeY);
+        const beforeOverviewLum = ext._luminance.get('desktop');
+
+        Main.overview.show();
+        await waitStable();
+        await sleep(400);
+        Main.overview.hide();
+        await waitFor(() => !Main.overview.visible, 5000, 50);
+        await sleep(700);
+
+        const afterOverviewLum = ext._luminance.get('desktop');
+        check('window content is not sampled as the desktop background',
+            coveredLum !== null && afterOverviewLum !== undefined &&
+            Math.abs(afterOverviewLum - coveredLum) > 0.2,
+            `covered=${coveredLum?.toFixed(3)} wallpaper=${beforeOverviewLum?.toFixed(3)} ` +
+            `desktop=${afterOverviewLum?.toFixed(3)}`);
+
+        win.move_resize_frame(true, 60, Math.round(panelBottom + 400), 500, 300);
+        ext._updateTransparent();
+        await sleep(250);               // leave transition is running (500 ms)
+        const leaveMidLum = await panelLuminance();
+        await sleep(900);
+        const leaveFinalLum = await panelLuminance();
+        check('panel background still fades after an overview round trip',
+            leaveMidLum !== null && leaveFinalLum !== null &&
+            leaveMidLum > 0.05 && leaveMidLum < leaveFinalLum - 0.05,
+            `mid=${leaveMidLum} final=${leaveFinalLum} ` +
+            `classes="${Main.panel.get_style_class_name()}"`);
+
+        // --- E: separate black/white text shadow settings ----------------
         if (typeof ext._disableWhiteTextShadow === 'boolean') {
             const hasNoShadow = () => Main.panel.has_style_class_name('no-text-shadow');
             const hasDarkText = () => Main.panel.has_style_class_name('transparent-top-bar-dark-text');

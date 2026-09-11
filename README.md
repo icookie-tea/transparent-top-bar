@@ -38,10 +38,10 @@ app. Requires GNOME Shell 47–50.
 
 ## Development
 
-- [`docs/analysis.md`](docs/analysis.md) (Chinese) – analysis of the two
+- [`docs/analysis.md`](docs/analysis.md) (Chinese) – analysis of the three
   timing bugs that were fixed (wrong foreground color when entering the
-  overview, missing fade when a window leaves the bar) and the remaining
-  design notes.
+  overview, missing fade when a window leaves the bar, instant snap after an
+  overview round trip with a fullscreen window) and the remaining design notes.
 - [`tests/README.md`](tests/README.md) – behavioural tests that run a nested
   GNOME Shell (`gnome-shell --devkit`) inside a toolbox container.
 

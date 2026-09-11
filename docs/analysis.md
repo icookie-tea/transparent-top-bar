@@ -11,6 +11,7 @@
 |---|---|---|
 | 进入 overview 偶发用错前景色，约 0.5–1s 后自愈 | 采样定时器可能落在 overview 的 250ms 过渡窗口内，采到尚未变暗/模糊的背景，并被当成稳态值写进 `overview` 缓存；下次进入会先套用这个脏缓存 | 用 `_unstableUntilMs` 截止时间标记过渡，`_scheduleSampling()` 自动把采样推迟到过渡结束；`shown`/`hidden` 后的采样延迟 500→100ms；启用时先快速采样再延迟确认；失效时清掉其它状态的缓存；无缓存时用桌面亮度兜底 |
 | 窗口靠近时面板变黑有过渡，窗口离开时变透明没有过渡 | St 的过渡是"旧/新样式交叉淡化"，过渡进行中如果再来一次**不同的**样式变更会被直接取消（`timeline_stop` + `completed`）。旧代码每次窗口 `notify::allocation` 都 remove+add 前景色 class，于是离开方向的过渡被杀掉；靠近方向因为 remove 是空操作而幸存 | `_applyAutoColorClass()` 幂等：只有判定结果真正变化才动 class |
+| overview 往返（窗口一直全屏）之后，取消全屏/切到空工作区时面板黑色背景瞬间消失 | overview 往返把**窗口内容**采成了桌面亮度（面板不透明时采样线被窗口盖着）；取消全屏时先用脏值定前景色，115ms 后新采样纠正，这次 class 变化正好落在 500ms 淡出中间，按上一条规则把过渡取消了 | 面板不透明时不给桌面亮度采样（`_panelIsCovered()`）；前景色 class 在面板过渡期间只安排延迟应用（`_markPanelTransition()`） |
 
 ---
 
@@ -290,7 +291,83 @@ if (darkText === true) {
 
 ---
 
-## 3. 一并修复的问题
+## 3. 问题三：overview 往返后，面板淡出变成瞬间跳变
+
+### 3.1 现象
+
+窗口全屏（面板不透明、纯黑、浅色元素）→ 进入 overview（面板透明）
+→ 回到桌面（窗口仍是全屏）→ 取消全屏或切到空工作区时，面板的黑色
+背景不是 500ms 淡出，而是**瞬间消失**。不做 overview 往返、直接取消
+全屏则一切正常。
+
+### 3.2 定位：桌面亮度缓存被窗口内容污染
+
+面板下方 4px 那条采样线，在窗口贴住面板时是被窗口盖住的。扩展却仍然
+会采样（`shown`/`hidden` 后的 `_onBackgroundStateChanged()` 会安排一次
+100ms 后的采样），把**窗口内容**当成桌面亮度写进缓存：
+
+```
+SAMPLE state=desktop -> 0.063 panelTransparent=false   ← 0.063 = 深色全屏窗口的内容
+                                                        （亮色壁纸是 0.800）
+```
+
+于是取消全屏时发生的事：
+
+```
+5080 CLASS-CHANGE transparent-top-bar                  ← 过渡开始（500ms）
+5081 CLASS-CHANGE transparent-top-bar-0
+5081 APPLY dark-text false -> false                    ← 用脏缓存判断：浅色文字
+5196 SAMPLE state=desktop -> 0.800                     ← 115ms 后采到真正的壁纸
+5197 CLASS-CHANGE ... transparent-top-bar-dark-text    ← 前景色 class 在过渡中途变化
+```
+
+最后一步正落在问题二的那条 St 规则上（§2.1）：
+`st_theme_node_transition_update()` 在过渡进行中遇到样式变化会直接取消
+过渡，面板于是跳到最终状态。像素证据（面板顶行，0 = 黑，0.8 = 透明后
+显示壁纸）：
+
+| | 离开后 250ms | 最终 |
+|---|---|---|
+| 修复前 | **0.80** | 0.80 |
+| 修复后 | **0.25** | 0.80 |
+
+### 3.3 修复
+
+1. **面板不透明时不给"桌面"采样**（`_panelIsCovered()`）。桌面亮度的
+   含义是"面板透明时背后显示什么"，也就是壁纸；有窗口贴在面板前面时
+   那条采样线属于窗口，采到的值对前景色判断没有意义。面板变透明的那一刻
+   本来就会重新采样（`_setTransparent()` → `SAMPLE_DELAY_STATE`），所以
+   不会缺数据。采样前、拿到结果后各检查一次，避免"采样期间窗口盖上来"
+   的混合值被接受。
+
+   ```js
+   _panelIsCovered(state) {
+       return state === PanelBackgroundState.DESKTOP && this._panelTransparent === false;
+   }
+   ```
+
+   顺带：以前全屏窗口期间换壁纸，缓存会被写成窗口内容；现在它保持在
+   旧壁纸值，直到面板重新变透明后由新采样更新。
+
+2. **前景色 class 不打断正在跑的面板过渡**。即使脏值不再产生，其它来源
+   （壁纸变化、`foreground-luminance-threshold`、`sample-count`）的采样
+   结果也可能恰好落在过渡窗口里。`_setTransparent()` 在真正改动了背景类
+   之后记下截止时间，期间 `_applyAutoColorClass()` 只安排一次延迟应用：
+
+   | 时机 | 处理 |
+   |---|---|
+   | 与背景类同一次调用（St 看来 `elapsed == 0`） | 立即应用，不会取消过渡 |
+   | 过渡开始之后的任何 class 变化 | 推迟到过渡结束再应用 |
+
+   截止时间取自 St 真正会用的时长
+   （`Main.panel.get_theme_node().get_transition_duration()`，即目标样式
+   节点的 `transition-duration`），不会和 `stylesheet.css` 里的 500ms 脱节，
+   自定义主题改了时长也依然正确；`enable-animations` 关闭时 St 根本不建
+   过渡，也就无需推迟。
+
+---
+
+## 4. 一并修复的问题
 
 - **`_updateTransparentDelayed()` 定时器泄漏**：连续 `switch-workspace`
   时直接覆盖 `_delayedTimeoutId`，旧定时器失联；禁用扩展后它仍会触发，
@@ -325,7 +402,7 @@ if (darkText === true) {
 
 ---
 
-## 4. 验证
+## 5. 验证
 
 测试细节见 [`../tests/README.md`](../tests/README.md)。核心是在 toolbox
 容器里跑一个嵌套 GNOME Shell，用 `--automation-script` 驱动，
@@ -343,19 +420,26 @@ PASS opaque panel is black (panel=0 classes="null")
 PASS panel is transparent after the window left (panel=0.8)
 PASS panel background is still fading mid-way (opaque=0 mid=0.306 final=0.8)
 PASS overview sample recorded while stable (desktop=0.8 overview=0.135)
+PASS window content is not sampled as the desktop background (covered=0.063 wallpaper=0.800 desktop=0.800)
+PASS panel background still fades after an overview round trip (mid=0.25 final=0.8)
 SUMMARY ALL PASS
 ```
 
-`git stash` 回旧代码后，同一个测试会抓到两个 bug：
+`git stash` 回旧代码后，同一个测试会抓到四个 bug：
 
 ```
 FAIL sample during transition is discarded (overview=0.42)
 FAIL panel background is still fading mid-way (opaque=0 mid=0.8 final=0.8)
+FAIL window content is not sampled as the desktop background (covered=0.063 wallpaper=0.800 desktop=0.063)
+FAIL panel background still fades after an overview round trip (mid=0.8 final=0.8)
 ```
+
+最后两条里 `desktop=0.063` 是窗口内容被当成桌面亮度，`mid=0.8 final=0.8`
+是淡出被这次纠正取消、直接跳到透明。
 
 ---
 
-## 5. 经验教训：dconf 必须用私有会话总线隔离
+## 6. 经验教训：dconf 必须用私有会话总线隔离
 
 做这个测试时踩过一次坑：最初以为把 `HOME` 指到临时目录就够了，结果
 `dconf write` 走的是**会话总线**，写进了正在使用的桌面环境——
