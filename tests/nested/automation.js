@@ -11,10 +11,13 @@
 //     out instead of flipping the foreground class mid-transition.
 //  E. The black and white text shadows have independent settings; only the
 //     one matching the active foreground decides the no-text-shadow class.
+//  F. The optional edge shadow renders a gradient, preserves background
+//     sampling/work area/input, and follows foreground/fullscreen/lifecycle.
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
+import Clutter from 'gi://Clutter';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
@@ -57,6 +60,7 @@ async function waitFor(fn, timeoutMs = 15000, stepMs = 100) {
 }
 
 Gio._promisify(Shell.Screenshot.prototype, 'pick_color');
+Gio._promisify(Shell.Screenshot.prototype, 'screenshot_area');
 
 let screenshot = null;
 async function samplePixel(x, y) {
@@ -83,6 +87,19 @@ async function panelLuminance() {
         return null;
     values.sort((a, b) => a - b);
     return values[Math.floor(values.length / 2)];
+}
+
+async function captureTopEdge(name) {
+    const monitor = Main.layoutManager.primaryMonitor;
+    const path = GLib.build_filenamev([GLib.get_home_dir(), '..', `${name}.png`]);
+    const stream = Gio.File.new_for_path(path).replace(null, false, Gio.FileCreateFlags.NONE, null);
+    try {
+        const capture = new Shell.Screenshot();
+        await capture.screenshot_area(monitor.x, monitor.y, monitor.width, 200, stream);
+    } finally {
+        stream.close(null);
+    }
+    info('screenshot:', path);
 }
 
 function rectString(win) {
@@ -316,6 +333,137 @@ export async function run() {
         } else {
             info('pre-fix code: no separate text shadow settings');
         }
+
+        // --- F: real top-edge shadow rendering and lifecycle -------------
+        check('top edge shadow is disabled by default',
+            !ext._settings.get_boolean('top-edge-shadow'));
+        const workspace = global.workspace_manager.get_active_workspace();
+        const areaBefore = workspace.get_work_area_for_monitor(monitor.index);
+        const probeX = Math.round(monitor.x + monitor.width / 3);
+        const probeY = Math.round(panelBottom + 4);
+        const setEdgeShadow = async enabled => {
+            ext._settings.set_boolean('top-edge-shadow', enabled);
+            await sleep(800);
+        };
+
+        // Force light text to exercise the full-strength gradient.
+        ext._settings.set_boolean('auto-foreground-color', false);
+        await sleep(700);
+        const unshaded = await samplePixel(probeX, probeY);
+        await captureTopEdge('edge-shadow-off');
+        await setEdgeShadow(true);
+        const shaded = await samplePixel(probeX, probeY);
+        const shadow = ext._topEdgeShadow;
+        const shadowBottom = shadow.y + shadow.height;
+        const halfway = await samplePixel(probeX, Math.round((probeY + shadowBottom) / 2));
+        const below = await samplePixel(probeX, Math.ceil(shadowBottom + 4));
+        const fullStrengthTop = await panelLuminance();
+        check('enabled shadow darkens the strip below the panel',
+            unshaded !== null && shaded !== null && shaded < unshaded - 0.025,
+            `off=${unshaded} on=${shaded}`);
+        check('shadow gently fades to the unchanged background',
+            halfway > shaded && below > halfway && Math.abs(below - unshaded) < 0.015,
+            `near=${shaded} middle=${halfway} below=${below}`);
+        const areaAfter = workspace.get_work_area_for_monitor(monitor.index);
+        check('shadow does not change the work area',
+            areaBefore.x === areaAfter.x && areaBefore.y === areaAfter.y &&
+            areaBefore.width === areaAfter.width && areaBefore.height === areaAfter.height);
+        check('shadow does not intercept pointer events',
+            !shadow.reactive && !shadow.can_focus &&
+            global.stage.get_actor_at_pos(Clutter.PickMode.REACTIVE, probeX, probeY) !== shadow);
+        await captureTopEdge('edge-shadow-on');
+
+        const compensated = await ext._sampleBackgroundLuminance('desktop');
+        check('background sampling compensates for the rendered shadow',
+            compensated !== null && Math.abs(compensated - unshaded) < 0.02,
+            `wallpaper=${unshaded} sample=${compensated}`);
+
+        ext._settings.set_double('foreground-luminance-threshold', 0.1);
+        ext._settings.set_boolean('auto-foreground-color', true);
+        await ext._refreshBackgroundLuminance();
+        await sleep(800);
+        const reducedTop = await panelLuminance();
+        check('shadow is reduced behind dark text',
+            Main.panel.has_style_class_name('transparent-top-bar-dark-text') &&
+            reducedTop > fullStrengthTop + 0.06,
+            `lightText=${fullStrengthTop} darkText=${reducedTop}`);
+        for (let i = 0; i < 3; i++) {
+            await ext._refreshBackgroundLuminance();
+            await sleep(100);
+        }
+        check('repeated samples keep the wallpaper luminance and dark text stable',
+            Math.abs(ext._luminance.get('desktop') - unshaded) < 0.02 &&
+            Main.panel.has_style_class_name('transparent-top-bar-dark-text'));
+        await captureTopEdge('edge-shadow-dark-text');
+
+        ext._settings.set_boolean('auto-foreground-color', false);
+        await sleep(800);
+        ext._settings.set_int('top-edge-shadow-strength', 45);
+        await sleep(800);
+        const stronger = await samplePixel(probeX, probeY);
+        check('strength setting changes the rendered gradient', stronger < shaded - 0.025,
+            `default=${shaded} stronger=${stronger}`);
+        ext._settings.set_int('top-edge-shadow-height', 128);
+        await sleep(800);
+        const extended = await samplePixel(probeX, Math.ceil(shadowBottom + 4));
+        check('height setting extends the rendered shadow', extended < below - 0.025,
+            `short=${below} tall=${extended}`);
+        ext._settings.set_int('top-edge-shadow-strength', 0);
+        await sleep(500);
+        check('zero strength leaves the background unchanged',
+            Math.abs(await samplePixel(probeX, probeY) - unshaded) < 0.015);
+        ext._settings.reset('top-edge-shadow-strength');
+        ext._settings.reset('top-edge-shadow-height');
+        await sleep(800);
+
+        win.move_frame(true, 60, 0);
+        await waitFor(() => ext._panelTransparent === false);
+        await sleep(700);
+        check('shadow disappears when a window makes the bar opaque', shadow.opacity === 0);
+        win.move_frame(true, 60, Math.round(panelBottom + 400));
+        await waitFor(() => ext._panelTransparent === true);
+        await sleep(800);
+        check('shadow returns when the panel becomes transparent', shadow.opacity === 255);
+
+        win.make_fullscreen();
+        await waitFor(() => !Main.layoutManager.panelBox.visible);
+        check('fullscreen hides the shadow with the panel', !shadow.visible);
+        win.unmake_fullscreen();
+        await waitFor(() => Main.layoutManager.panelBox.visible);
+        win.move_frame(true, 60, Math.round(panelBottom + 400));
+        await sleep(800);
+
+        Main.overview.show();
+        await waitStable();
+        await sleep(500);
+        // The overview is very dark: use the top row, where the gradient
+        // has its full strength, instead of a tiny absolute delta below it.
+        const shadedOverview = await panelLuminance();
+        await setEdgeShadow(false);
+        const plainOverview = await panelLuminance();
+        check('shadow also renders over the overview background',
+            plainOverview > shadedOverview + 0.015,
+            `off=${plainOverview} on=${shadedOverview}`);
+        Main.overview.hide();
+        await waitFor(() => !Main.overview.visible);
+        await sleep(700);
+        check('switching the shadow off restores the background',
+            Math.abs(await samplePixel(probeX, probeY) - unshaded) < 0.015 && shadow.opacity === 0);
+
+        await setEdgeShadow(true);
+        ext.disable();
+        check('disabling the extension removes the shadow actor',
+            !Main.layoutManager.uiGroup.get_children().some(actor =>
+                actor.name === 'transparent-top-bar-edge-shadow'));
+        ext.enable();
+        await sleep(800);
+        check('re-enabling restores one shadow with the saved switch',
+            ext._topEdgeShadow.opacity === 255 &&
+            Main.layoutManager.uiGroup.get_children().filter(actor =>
+                actor.name === 'transparent-top-bar-edge-shadow').length === 1);
+        ext._settings.reset('top-edge-shadow');
+        ext._settings.set_double('foreground-luminance-threshold', 0.7);
+        ext._settings.set_boolean('auto-foreground-color', true);
     } catch (e) {
         failures.push(String(e));
         logError(e, `${TAG} test run failed`);

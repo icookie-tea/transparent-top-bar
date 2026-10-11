@@ -3,12 +3,19 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Shell from 'gi://Shell';
+import Clutter from 'gi://Clutter';
+import Cairo from 'cairo';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 const DEBUG_LOGGING = 'debug-logging';
+const TOP_EDGE_SHADOW = 'top-edge-shadow';
+const TOP_EDGE_SHADOW_STRENGTH = 'top-edge-shadow-strength';
+const TOP_EDGE_SHADOW_HEIGHT = 'top-edge-shadow-height';
+const SHADOW_FADE_TIME = 300;
+const DARK_TEXT_SHADOW_OPACITY = 0.35;
 const DARK_TEXT_CLASS = 'transparent-top-bar-dark-text';
 const NO_TEXT_SHADOW_CLASS = 'no-text-shadow';
 const DISABLE_BLACK_TEXT_SHADOW = 'disable-black-text-shadow';
@@ -61,6 +68,9 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._panelTransitionUntilMs = 0;
         this._foregroundApplyId = null;
         this._debugLogging = false;
+        this._topEdgeShadow = null;
+        this._topEdgeShadowBounds = null;
+        this._topEdgeShadowOpacity = 0;
 
         // BackgroundManager (shell side) -> signal id
         this._bgManagerSignalIds = new Map();
@@ -90,6 +100,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         this._autoForegroundColor = this._settings.get_boolean(AUTO_FOREGROUND_COLOR);
         this._debugLogging = this._settings.get_boolean(DEBUG_LOGGING);
+        this._readTopEdgeShadowSettings();
         this._panelTransitionUntilMs = 0;
 
         this._actorSignalIds = new Map();
@@ -137,6 +148,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         this._interfaceSettingsId = this._interfaceSettings.connect('changed::color-scheme', () => this._invalidateLuminance());
 
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+            this._updateTopEdgeShadow();
             this._invalidateLuminance();
 
             // The layout manager recreates the background managers around this
@@ -152,6 +164,8 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         // notices it and emits 'changed'
         this._hookBackgroundManagers();
 
+        this._createTopEdgeShadow();
+
         this._updateTransparent();
 
         // _updateTransparent() samples quickly when the panel turns
@@ -160,6 +174,16 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
     }
 
     transparencyChanged(settings, key) {
+
+        if ([TOP_EDGE_SHADOW, TOP_EDGE_SHADOW_STRENGTH, TOP_EDGE_SHADOW_HEIGHT].includes(key)) {
+            this._readTopEdgeShadowSettings();
+            this._topEdgeShadow.queue_repaint();
+            this._updateTopEdgeShadow();
+            this._sampleGeneration++;
+            this._applyAutoColorClass();
+            this._scheduleSampling(SHADOW_FADE_TIME + PANEL_TRANSITION_MARGIN);
+            return;
+        }
 
         if (key === 'transparency') {
             if (this.transparencyChangeDebounce !== null)
@@ -261,6 +285,13 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
         this._actorSignalIds = null;
         this._windowSignalIds = null;
+
+        this._topEdgeShadow.remove_all_transitions();
+        Main.layoutManager.removeChrome(this._topEdgeShadow);
+        this._topEdgeShadow.destroy();
+        this._topEdgeShadow = null;
+        this._topEdgeShadowBounds = null;
+        this._topEdgeShadowOpacity = 0;
 
         if (this._settingsChangedId !== null) {
             this._settings.disconnect(this._settingsChangedId);
@@ -378,6 +409,125 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
     }
 
+    _readTopEdgeShadowSettings() {
+        this._topEdgeShadowEnabled = this._settings.get_boolean(TOP_EDGE_SHADOW);
+        this._topEdgeShadowStrength = this._settings.get_int(TOP_EDGE_SHADOW_STRENGTH) / 100;
+        this._topEdgeShadowHeight = this._settings.get_int(TOP_EDGE_SHADOW_HEIGHT);
+    }
+
+    _createTopEdgeShadow() {
+        this._topEdgeShadow = new St.DrawingArea({
+            name: 'transparent-top-bar-edge-shadow',
+            reactive: false,
+            can_focus: false,
+            visible: false,
+            opacity: 0,
+        });
+        this._topEdgeShadow.connect('repaint', area => {
+            const cr = area.get_context();
+            try {
+                const [width, height] = area.get_surface_size();
+                if (width <= 0 || height <= 0)
+                    return;
+
+                const gradient = new Cairo.LinearGradient(0, 0, 0, height);
+                // A quadratic falloff reaches transparency gently, without
+                // the visible lower edge of a simple two-stop gradient.
+                for (let i = 0; i <= 16; i++) {
+                    const t = i / 16;
+                    gradient.addColorStopRGBA(t, 0, 0, 0,
+                        this._topEdgeShadowStrength * (1 - t) ** 2);
+                }
+                cr.setSource(gradient);
+                cr.rectangle(0, 0, width, height);
+                cr.fill();
+            } finally {
+                cr.$dispose();
+            }
+        });
+
+        // A sibling of panelBox avoids increasing the panel's height/strut.
+        // It sits above the desktop/overview but below panel buttons/popups.
+        // Follow panelBox visibility ourselves, including fullscreen hiding.
+        Main.layoutManager.addChrome(this._topEdgeShadow, {
+            affectsStruts: false,
+            trackFullscreen: false,
+        });
+        Main.layoutManager.uiGroup.set_child_below_sibling(
+            this._topEdgeShadow, Main.layoutManager.panelBox);
+
+        for (const actor of [Main.panel, Main.layoutManager.panelBox]) {
+            this._actorSignalIds.set(actor, [
+                actor.connect('notify::allocation', () => this._updateTopEdgeShadow()),
+                actor.connect('notify::visible', () => this._updateTopEdgeShadow()),
+                actor.connect('notify::opacity', () => this._updateTopEdgeShadow(false)),
+                actor.connect('notify::translation-y', () => this._updateTopEdgeShadow(false)),
+            ]);
+        }
+        const themeContext = St.ThemeContext.get_for_stage(global.stage);
+        this._actorSignalIds.set(themeContext, [
+            themeContext.connect('notify::scale-factor', () => {
+                this._updateTopEdgeShadow();
+                this._invalidateLuminance();
+            }),
+        ]);
+    }
+
+    _updateTopEdgeShadow(animate = true) {
+        const shadow = this._topEdgeShadow;
+        if (shadow === null)
+            return;
+
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor) {
+            shadow.hide();
+            this._topEdgeShadowBounds = null;
+            return;
+        }
+
+        const [x, y] = Main.panel.get_transformed_position();
+        const [width, panelHeight] = Main.panel.get_transformed_size();
+        const scale = St.ThemeContext.get_for_stage(global.stage).scale_factor;
+        const height = Math.min(monitor.height,
+            Math.max(panelHeight + 24 * scale, this._topEdgeShadowHeight * scale));
+        this._topEdgeShadowBounds = {x, y, width, height};
+        shadow.set_position(x, y);
+        shadow.set_size(width, height);
+        shadow.visible = width > 0 && panelHeight > 0 &&
+            Main.panel.visible && Main.layoutManager.panelBox.visible;
+
+        const active = this._topEdgeShadowEnabled && this._panelTransparent === true &&
+            this._currentTransparency < 100;
+        const foregroundFactor = Main.panel.has_style_class_name(DARK_TEXT_CLASS)
+            ? DARK_TEXT_SHADOW_OPACITY : 1;
+        const panelOpacity = Main.panel.opacity * Main.layoutManager.panelBox.opacity / 255;
+        const opacity = active ? Math.round(panelOpacity * foregroundFactor) : 0;
+        if (opacity === this._topEdgeShadowOpacity)
+            return;
+
+        this._topEdgeShadowOpacity = opacity;
+        shadow.remove_transition('opacity');
+        shadow.ease({
+            opacity,
+            duration: animate && St.Settings.get().enable_animations ? SHADOW_FADE_TIME : 0,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        });
+    }
+
+    _topEdgeShadowAlphaAt(y) {
+        const bounds = this._topEdgeShadowBounds;
+        if (!bounds || y < bounds.y || y >= bounds.y + bounds.height)
+            return 0;
+
+        // Match the piecewise-linear stops painted by Cairo exactly.
+        const t = (y - bounds.y) / bounds.height;
+        const stop = Math.floor(t * 16);
+        const fraction = t * 16 - stop;
+        const a = (1 - stop / 16) ** 2;
+        const b = (1 - (stop + 1) / 16) ** 2;
+        return this._topEdgeShadowStrength * (a + (b - a) * fraction);
+    }
+
     _updateTransparent() {
         if (!this._darkFullScreen) {
             this._setTransparent(true);
@@ -444,6 +594,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
         }
 
         this._applyAutoColorClass(backgroundChanged);
+        this._updateTopEdgeShadow();
     }
 
     // St animates the panel background by cross-fading the old and the new
@@ -645,7 +796,18 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
                 }
 
                 // Cogl.Color channels are 0-255; 0.3/0.59/0.11 is what elementary OS uses
-                luminances.push((0.3 * color.red + 0.59 * color.green + 0.11 * color.blue) / 255);
+                let luminance = (0.3 * color.red + 0.59 * color.green + 0.11 * color.blue) / 255;
+                const bounds = this._topEdgeShadowBounds;
+                if (this._topEdgeShadow?.is_mapped() && bounds &&
+                    x >= bounds.x && x < bounds.x + bounds.width) {
+                    // pick_color includes our overlay. Undo its black alpha
+                    // so the cache remains wallpaper luminance, even after
+                    // the foreground changes the shadow's intensity.
+                    const alpha = this._topEdgeShadowAlphaAt(y) *
+                        this._topEdgeShadow.get_paint_opacity() / 255;
+                    luminance = Math.min(1, luminance / (1 - alpha));
+                }
+                luminances.push(luminance);
             } catch (e) {
                 log(`Transparent Top Bar: failed to sample background at ${x}, ${y}: ${e.message}`);
             }
@@ -692,7 +854,15 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
             if (transparency < 100 && luminance !== undefined) {
                 // the bar itself is rgba(0, 0, 0, transparency%), so it darkens its background
-                const effective = luminance * (1 - transparency / 100);
+                let effective = luminance * (1 - transparency / 100);
+                if (this._topEdgeShadowEnabled) {
+                    const [, panelY] = Main.panel.get_transformed_position();
+                    const [, panelHeight] = Main.panel.get_transformed_size();
+                    // Decide against the full-strength shadow. If dark text
+                    // wins we lighten the shadow afterward, which improves
+                    // its contrast without creating a feedback loop.
+                    effective *= 1 - this._topEdgeShadowAlphaAt(panelY + panelHeight / 2);
+                }
                 const threshold = this._settings.get_double(FOREGROUND_LUMINANCE_THRESHOLD_KEY);
 
                 const previous = this._darkText.get(state);
@@ -728,6 +898,7 @@ export default class TransparentTopBarWithCustomTransparencyExtension extends Ex
 
         // The text shadow depends on which foreground is active
         this._updateTextShadow();
+        this._updateTopEdgeShadow();
     }
 
     _scheduleForegroundApply() {

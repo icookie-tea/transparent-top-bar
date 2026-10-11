@@ -23,6 +23,13 @@ by zhanghai and lamarios, with:
 - **Separate black and white text shadows** – the black shadow of the default
   light foreground and the white shadow of the dark foreground can be turned
   off independently.
+- **Top edge shadow** – an optional soft black gradient that fades from the
+  screen's top edge to below the transparent bar. Enable it in **Top edge
+  shadow** in preferences; strength (default 22%) and height (default 64 logical
+  pixels) are adjustable. It starts disabled, is lighter behind dark text,
+  fades out with an opaque bar and follows the bar's fullscreen visibility.
+  Background samples compensate for the gradient to keep automatic text
+  color stable. The shadow does not receive clicks or change the work area.
 - **Debug logging** – optional sampling diagnostics in the system log.
 
 ## Install

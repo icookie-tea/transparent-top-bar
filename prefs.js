@@ -11,6 +11,9 @@ const AUTO_FOREGROUND_COLOR = 'auto-foreground-color';
 const FOREGROUND_LUMINANCE_THRESHOLD = 'foreground-luminance-threshold';
 const SAMPLE_COUNT = 'sample-count';
 const DEBUG_LOGGING = 'debug-logging';
+const TOP_EDGE_SHADOW = 'top-edge-shadow';
+const TOP_EDGE_SHADOW_STRENGTH = 'top-edge-shadow-strength';
+const TOP_EDGE_SHADOW_HEIGHT = 'top-edge-shadow-height';
 
 export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
 
@@ -76,6 +79,44 @@ export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
         settings.bind(DISABLE_WHITE_TEXT_SHADOW, whiteShadowRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         barGroup.add(whiteShadowRow);
 
+        const edgeShadowGroup = new Adw.PreferencesGroup({
+            title: _('Top edge shadow'),
+            description: _('A soft shadow fading down from the top of the screen. Reduced behind dark text and hidden when the bar is opaque.'),
+        });
+        const edgeShadowRow = new Adw.SwitchRow({
+            title: _('Enable top edge shadow'),
+        });
+        settings.bind(TOP_EDGE_SHADOW, edgeShadowRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        edgeShadowGroup.add(edgeShadowRow);
+
+        const shadowStrengthRow = new Adw.SpinRow({
+            title: _('Shadow strength (%)'),
+            subtitle: _('Maximum darkness at the top edge'),
+            adjustment: new Gtk.Adjustment({
+                lower: 0,
+                upper: 60,
+                step_increment: 1,
+                page_increment: 5,
+            }),
+        });
+        settings.bind(TOP_EDGE_SHADOW_STRENGTH, shadowStrengthRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind(TOP_EDGE_SHADOW, shadowStrengthRow, 'sensitive', Gio.SettingsBindFlags.GET);
+        edgeShadowGroup.add(shadowStrengthRow);
+
+        const shadowHeightRow = new Adw.SpinRow({
+            title: _('Shadow height (px)'),
+            subtitle: _('Distance from the top edge to fully transparent, scaled for the display'),
+            adjustment: new Gtk.Adjustment({
+                lower: 48,
+                upper: 160,
+                step_increment: 4,
+                page_increment: 16,
+            }),
+        });
+        settings.bind(TOP_EDGE_SHADOW_HEIGHT, shadowHeightRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind(TOP_EDGE_SHADOW, shadowHeightRow, 'sensitive', Gio.SettingsBindFlags.GET);
+        edgeShadowGroup.add(shadowHeightRow);
+
         const colorGroup = new Adw.PreferencesGroup({
             title: _('Automatic foreground color'),
             description: _('Sample the background behind the top bar and pick dark or light text for contrast'),
@@ -117,6 +158,7 @@ export default class TransparentTopBarPrefsWidget extends ExtensionPreferences {
         colorGroup.add(sampleRow);
 
         page.add(barGroup);
+        page.add(edgeShadowGroup);
         page.add(colorGroup);
 
         const debugGroup = new Adw.PreferencesGroup({
